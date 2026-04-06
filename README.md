@@ -206,23 +206,24 @@ This example demonstrates the minimal execution path: construct an `Engine`, reg
 The example consists of four principal components: the caller in `examples/basic/main.go`, an `Engine` instance, a `demoProvider` instance implementing `Provider`, and a `Runtime` instance created during execution. The engine owns provider registration, compilation state, execution coordination, and the retained runtime reference. The runtime owns per-execution evaluation state, including loaded series, indicator state, variable environments, and the final computed value.
 
 ```mermaid
+%%{init: {"themeVariables": {"fontSize": "12px"}, "flowchart": {"nodeSpacing": 18, "rankSpacing": 22, "diagramPadding": 4}} }%%
 flowchart TD
-	A["examples/basic/main.go"] --> B["Engine instance<br/>NewEngine()"]
-	B --> C["RegisterMarketDataProvider(provider)"]
-	C --> D["demoProvider instance"]
-	B --> E["SetDefaultSymbol DEMO"]
-	B --> F["Compile(script)"]
-	F --> G["Program AST/internal IR"]
-	G --> H["Bytecode []byte"]
-	H --> I["Execute(bytecode)"]
-	I --> J["ExecuteWithRuntime(bytecode)"]
-	J --> K["Runtime instance"]
+	A["main.go"] --> B["Engine<br/>NewEngine()"]
+	B --> C["RegisterProvider()"]
+	C --> D["demoProvider"]
+	B --> E["Default symbol<br/>DEMO"]
+	B --> F["Compile()"]
+	F --> G["Program IR"]
+	G --> H["Bytecode"]
+	H --> I["Execute()"]
+	I --> J["ExecuteWithRuntime()"]
+	J --> K["Runtime"]
 	D --> L["Series data<br/>DEMO|close, DEMO|volume"]
 	L --> K
 	K --> M["Builtins<br/>sma, ema, close, volume"]
-	M --> N["Final value of last bar"]
-	K --> O["Runtime state<br/>barIndex, envStack, history, indicatorState"]
-	J --> P["Engine.lastRuntime"]
+	M --> N["Final value"]
+	K --> O["State<br/>barIndex, env, history, indicators"]
+	J --> P["lastRuntime"]
 ```
 
 ### Compile And Execute Flow
@@ -230,6 +231,7 @@ flowchart TD
 Execution is divided into a compilation phase and an evaluation phase. `Compile(script)` normalizes source compatibility syntax, parses the program, validates type constraints, lowers the AST, derives series requirements, and encodes the resulting program as bytecode. `Execute(bytecode)` then resolves the active symbol and required series through the registered providers, constructs a runtime, evaluates the program once per bar, commits history state after each iteration, and returns the final value produced on the last bar.
 
 ```mermaid
+%%{init: {"themeVariables": {"fontSize": "12px"}, "sequence": {"diagramMarginX": 20, "diagramMarginY": 10, "messageMargin": 10}} }%%
 sequenceDiagram
 	participant App as main.go
 	participant Eng as Engine
@@ -237,29 +239,29 @@ sequenceDiagram
 	participant RT as Runtime
 
 	App->>Eng: NewEngine()
-	App->>Eng: RegisterMarketDataProvider(demoProvider)
+	App->>Eng: RegisterProvider(demoProvider)
 	App->>Eng: SetDefaultSymbol("DEMO")
 	App->>Eng: Compile(script)
-	Eng->>Eng: normalizePineScriptCompat()
-	Eng->>Eng: parseProgram()
-	Eng->>Eng: validateNoNumericToBoolAutoConversion()
+	Eng->>Eng: normalize()
+	Eng->>Eng: parse()
+	Eng->>Eng: validate()
 	Eng->>Eng: lowerProgram()
-	Eng->>Eng: collectProgramRequirements()
+	Eng->>Eng: collectRequirements()
 	Eng->>Eng: encodeProgram()
 	Eng-->>App: bytecode
 
 	App->>Eng: Execute(bytecode)
 	Eng->>Eng: ExecuteWithRuntime(bytecode)
 	Eng->>Prov: GetTimeframe()/GetSession()
-	Eng->>Prov: GetSymbols()/GetValuesTypes()
+	Eng->>Prov: GetSymbols()/GetValueTypes()
 	Eng->>Prov: GetSeries("DEMO|close")
 	Eng->>RT: newRuntime(...)
 
-	loop for each bar in close series
+	loop each close bar
 		Eng->>RT: barIndex = i
 		Eng->>RT: execTopLevel()
 		RT->>RT: evaluate close
-		RT->>RT: update sma/ema state
+		RT->>RT: update indicators
 		RT->>RT: evaluate sum2(ma, ex)
 		Eng->>RT: commitBar()
 	end
