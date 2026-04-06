@@ -85,6 +85,19 @@ Engine type (recommended):
 - `Runtime.Series(seriesKey string) (SeriesExtended, bool)` returns a series and `true` when available/loadable.
 - `Runtime.Value(name string) (interface{}, bool)` returns the latest value for a variable (scope/history), plus found flag.
 
+### Engine vs Runtime
+
+| Aspect | Engine | Runtime |
+| --- | --- | --- |
+| Role | Long-lived coordinator for compilation and execution | Per-execution evaluation state holder |
+| Lifetime | Reusable across multiple compile/execute calls | Created for a specific execution |
+| Owns | Providers, registered functions, defaults, logs, bytecode cache, retained runtime | Loaded series, active symbol/value type, bar index, variable environments, history, indicator state, last value |
+| Primary APIs | `Compile`, `Execute`, `ExecuteWithRuntime`, `RegisterMarketDataProvider`, `RegisterFunction` | `Snapshot`, `Series`, `SeriesKeys`, `Symbols`, `Value`, `ValueTypes`, `Release` |
+| Responsibility | Resolve providers, derive execution context, construct runtime, drive bar-by-bar evaluation | Evaluate the program, maintain history, update indicators, expose execution state |
+| Retention | Keeps the latest runtime via `Engine.Runtime()` | Can be released with `Runtime.Release()` |
+
+Use `Engine` to configure and start execution. Use `Runtime` to inspect the state produced by a completed execution.
+
 ## Alerts
 
 `alert()` and `alertcondition()` emit events to an engine callback (there is no TradingView-style delivery). Use `(*Engine).SetAlertSink(func(AlertEvent))`.
@@ -116,26 +129,54 @@ Time/session notes:
 
 ## Supported Features
 
-- Variable declaration and assignment (`var`, `const`)
-- Scalar types (`int`, `float`, `bool`, `string`), plus `na`
+### Language Core
+
+- Variable declaration and assignment: `var`, `const`
+- Scalar types: `int`, `float`, `bool`, `string`, `na`
 - Arithmetic, logical, and comparison operators
-- Ternary conditional operator (`cond ? a : b`)
+- Ternary conditional operator: `cond ? a : b`
 - Control flow: `if/else`, `for`, `while`, `switch`, `break`, `continue`, `return`
-- Functions (arrow and block forms)
-- Arrays, tuples, and matrices
+- Functions: arrow and block forms
+- Composite values: arrays, tuples, and matrices
+
+### Series And Market Data
+
 - Built-in variables: `open`, `high`, `low`, `close`, `volume`, `hl2`, `hlc3`, `hlcc4`, `ohlc4`
 - Additional built-in variables: `bar_index`
+- Series history indexing on series-like values, for example `close[1]`, `x[2]`, `close_of("AAPL")[1]`
+- Cross-symbol built-ins: `value_of`, `close_of`, `open_of`, `high_of`, `low_of`, `sma_of`, `ema_of`, `rsi_of`
+
+### Indicators And Numeric Helpers
+
 - Built-in indicators: `sma`, `ema`, `rsi`, `atr`, `bb`, `bbw`, `crossover`, `crossunder`, `change`, `highest`, `lowest`, `stdev`, `correlation`
 - `ta` namespace aliases: `ta.sma`, `ta.ema`, `ta.rsi`, `ta.atr`, `ta.bb`, `ta.bbw`, `ta.crossover`, `ta.crossunder`, `ta.change`, `ta.highest`, `ta.lowest`, `ta.stdev`, `ta.correlation`
 - `math` namespace subset: `math.abs`, `math.max`, `math.min`, `math.round`, `math.floor`, `math.ceil`, `math.pow`, `math.sqrt`, `math.log`, `math.exp`, `math.sin`, `math.cos`, `math.tan`
 - NA helpers: `na`, `nz`
-- Series history indexing on series-like values (for example `close[1]`, `x[2]`, `close_of("AAPL")[1]`)
-- Cross-symbol built-ins: `value_of`, `close_of`, `open_of`, `high_of`, `low_of`, `sma_of`, `ema_of`, `rsi_of`
-- Array built-ins: constructors (`array.new_*`, `array.new<type>`, `array.from`, `array.copy`), access/mutation (`array.size`, `array.get`, `array.set`, `array.push`, `array.pop`, `array.unshift`, `array.shift`, `array.insert`, `array.clear`, `array.concat`, `array.slice`, `array.first`, `array.last`), search (`array.includes`, `array.indexof`, `array.lastindexof`, `array.binary_search_leftmost`, `array.binary_search_rightmost`), stats (`array.abs`, `array.sum`, `array.avg`, `array.min`, `array.max`, `array.range`, `array.median`, `array.mode`, `array.covariance`, `array.percentrank`, `array.percentile_linear_interpolation`, `array.percentile_nearest_rank`), and utilities (`array.join`, `array.every`). Compatibility alias: `array.percentile_neareast_rank`.
-- Matrix built-ins: creation/copy/access (`matrix.new_*`, `matrix.copy`, `matrix.get`, `matrix.set`, `matrix.row`, `matrix.col`), shape/mutation (`matrix.rows`, `matrix.columns`, `matrix.elements_count`, `matrix.reshape`, `matrix.submatrix`, `matrix.add_row`, `matrix.add_col`, `matrix.remove_row`, `matrix.remove_col`, `matrix.swap_rows`, `matrix.swap_columns`, `matrix.reverse`, `matrix.sort`, `matrix.fill` with full-matrix and range overloads), statistics (`matrix.sum`, `matrix.avg`, `matrix.min`, `matrix.max`, `matrix.median`, `matrix.mode`), operations (`matrix.concat`, `matrix.diff`, `matrix.mult`, `matrix.kron`, `matrix.pow`), linear algebra (`matrix.det`, `matrix.rank`, `matrix.trace`, `matrix.transpose`, `matrix.inv`, `matrix.pinv`, `matrix.eigenvalues`, `matrix.eigenvectors` for square matrices), properties (`matrix.is_square`, `matrix.is_symmetric`, `matrix.is_diagonal`, `matrix.is_identity`, `matrix.is_zero`, `matrix.is_triangular`, `matrix.is_binary`, `matrix.is_antidiagonal`, `matrix.is_antisymmetric`, `matrix.is_stochastic`)
-- String helpers: `str.tostring`, `str.length`, `str.upper`, `str.lower`, `str.contains`, `str.startswith`, `str.endswith`, `str.replace`, `str.substring`, `str.split`, `str.format`
 - Type helpers: `int`, `float`, `bool`, `string`
+
+### Array Built-Ins
+
 - Mutable arrays created via `array.new_*` (passed by reference; supports side-effect usage like `array.push(arr, x)` without assignment)
+- Constructors: `array.new_*`, `array.new<type>`, `array.from`, `array.copy`
+- Access and mutation: `array.size`, `array.get`, `array.set`, `array.push`, `array.pop`, `array.unshift`, `array.shift`, `array.insert`, `array.clear`, `array.concat`, `array.slice`, `array.first`, `array.last`
+- Search: `array.includes`, `array.indexof`, `array.lastindexof`, `array.binary_search_leftmost`, `array.binary_search_rightmost`
+- Statistics: `array.abs`, `array.sum`, `array.avg`, `array.min`, `array.max`, `array.range`, `array.median`, `array.mode`, `array.covariance`, `array.percentrank`, `array.percentile_linear_interpolation`, `array.percentile_nearest_rank`
+- Utilities: `array.join`, `array.every`
+- Compatibility alias: `array.percentile_neareast_rank`
+
+### Matrix Built-Ins
+
+- Creation, copy, and access: `matrix.new_*`, `matrix.copy`, `matrix.get`, `matrix.set`, `matrix.row`, `matrix.col`
+- Shape and mutation: `matrix.rows`, `matrix.columns`, `matrix.elements_count`, `matrix.reshape`, `matrix.submatrix`, `matrix.add_row`, `matrix.add_col`, `matrix.remove_row`, `matrix.remove_col`, `matrix.swap_rows`, `matrix.swap_columns`, `matrix.reverse`, `matrix.sort`, `matrix.fill` with full-matrix and range overloads
+- Statistics: `matrix.sum`, `matrix.avg`, `matrix.min`, `matrix.max`, `matrix.median`, `matrix.mode`
+- Operations: `matrix.concat`, `matrix.diff`, `matrix.mult`, `matrix.kron`, `matrix.pow`
+- Linear algebra: `matrix.det`, `matrix.rank`, `matrix.trace`, `matrix.transpose`, `matrix.inv`, `matrix.pinv`, `matrix.eigenvalues`, `matrix.eigenvectors` for square matrices
+- Properties: `matrix.is_square`, `matrix.is_symmetric`, `matrix.is_diagonal`, `matrix.is_identity`, `matrix.is_zero`, `matrix.is_triangular`, `matrix.is_binary`, `matrix.is_antidiagonal`, `matrix.is_antisymmetric`, `matrix.is_stochastic`
+
+### String And Placeholder APIs
+
+- String helpers: `str.tostring`, `str.length`, `str.upper`, `str.lower`, `str.contains`, `str.startswith`, `str.endswith`, `str.replace`, `str.substring`, `str.split`, `str.format`
+- Built-in type placeholders: `color`, `line.new`, `label.new`
 - No-render UI/drawing stubs (to allow script execution without rendering): `line.*`, `label.*`, `box.*`, `table.*`, `linefill.*`, `barcolor`
 
 ## Unsupported Features
@@ -156,6 +197,75 @@ Run:
 
 ```bash
 go run ./examples/basic
+```
+
+This example demonstrates the minimal execution path: construct an `Engine`, register a `Provider`, set the default symbol, compile a Pine-style script to bytecode, and execute that bytecode against provider-backed series data.
+
+### Example Structure
+
+The example consists of four principal components: the caller in `examples/basic/main.go`, an `Engine` instance, a `demoProvider` instance implementing `Provider`, and a `Runtime` instance created during execution. The engine owns provider registration, compilation state, execution coordination, and the retained runtime reference. The runtime owns per-execution evaluation state, including loaded series, indicator state, variable environments, and the final computed value.
+
+```mermaid
+flowchart TD
+	A["examples/basic/main.go"] --> B["Engine instance<br/>NewEngine()"]
+	B --> C["RegisterMarketDataProvider(provider)"]
+	C --> D["demoProvider instance"]
+	B --> E["SetDefaultSymbol DEMO"]
+	B --> F["Compile(script)"]
+	F --> G["Program AST/internal IR"]
+	G --> H["Bytecode []byte"]
+	H --> I["Execute(bytecode)"]
+	I --> J["ExecuteWithRuntime(bytecode)"]
+	J --> K["Runtime instance"]
+	D --> L["Series data<br/>DEMO|close, DEMO|volume"]
+	L --> K
+	K --> M["Builtins<br/>sma, ema, close, volume"]
+	M --> N["Final value of last bar"]
+	K --> O["Runtime state<br/>barIndex, envStack, history, indicatorState"]
+	J --> P["Engine.lastRuntime"]
+```
+
+### Compile And Execute Flow
+
+Execution is divided into a compilation phase and an evaluation phase. `Compile(script)` normalizes source compatibility syntax, parses the program, validates type constraints, lowers the AST, derives series requirements, and encodes the resulting program as bytecode. `Execute(bytecode)` then resolves the active symbol and required series through the registered providers, constructs a runtime, evaluates the program once per bar, commits history state after each iteration, and returns the final value produced on the last bar.
+
+```mermaid
+sequenceDiagram
+	participant App as main.go
+	participant Eng as Engine
+	participant Prov as demoProvider
+	participant RT as Runtime
+
+	App->>Eng: NewEngine()
+	App->>Eng: RegisterMarketDataProvider(demoProvider)
+	App->>Eng: SetDefaultSymbol("DEMO")
+	App->>Eng: Compile(script)
+	Eng->>Eng: normalizePineScriptCompat()
+	Eng->>Eng: parseProgram()
+	Eng->>Eng: validateNoNumericToBoolAutoConversion()
+	Eng->>Eng: lowerProgram()
+	Eng->>Eng: collectProgramRequirements()
+	Eng->>Eng: encodeProgram()
+	Eng-->>App: bytecode
+
+	App->>Eng: Execute(bytecode)
+	Eng->>Eng: ExecuteWithRuntime(bytecode)
+	Eng->>Prov: GetTimeframe()/GetSession()
+	Eng->>Prov: GetSymbols()/GetValuesTypes()
+	Eng->>Prov: GetSeries("DEMO|close")
+	Eng->>RT: newRuntime(...)
+
+	loop for each bar in close series
+		Eng->>RT: barIndex = i
+		Eng->>RT: execTopLevel()
+		RT->>RT: evaluate close
+		RT->>RT: update sma/ema state
+		RT->>RT: evaluate sum2(ma, ex)
+		Eng->>RT: commitBar()
+	end
+
+	RT-->>Eng: lastValue
+	Eng-->>App: result
 ```
 
 Run the volume profile harness (Please check the comment in `examples/volume_profile_pivot_anchored/script.pine` for downloading the original script from TradingView):
