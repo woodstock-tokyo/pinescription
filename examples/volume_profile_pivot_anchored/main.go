@@ -33,7 +33,7 @@ func (d *demoOHLCVProvider) GetSeries(seriesKey string) (pinego.SeriesExtended, 
 	for i := 0; i < d.bars; i++ {
 		base := 100.0 + float64(i)*0.1
 		op := base
-		cl := base
+		var cl float64
 		if i%2 == 0 {
 			cl = base + 0.05
 		} else {
