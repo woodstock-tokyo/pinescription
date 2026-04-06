@@ -549,7 +549,6 @@ func TestRegisterUserFunction(t *testing.T) {
 func TestUnsupportedFeatures(t *testing.T) {
 	tests := []string{
 		"strategy.entry(\"L\", strategy.long)",
-		"alert(\"hello\")",
 		"plot(close)",
 	}
 	for _, script := range tests {
@@ -564,6 +563,35 @@ func TestUnsupportedFeatures(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "unsupported feature") {
 			t.Fatalf("expected unsupported feature error for %q, got %v", script, err)
 		}
+	}
+}
+
+func TestAlertSink(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 1, 2, 3))
+	e.SetDefaultSymbol("TEST")
+
+	var events []AlertEvent
+	e.SetAlertSink(func(ev AlertEvent) {
+		events = append(events, ev)
+	})
+
+	b, err := e.Compile("if bar_index == 0\n    alert(\"hello\")")
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	_, err = e.Execute(b)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 alert, got %d", len(events))
+	}
+	if events[0].Message != "hello" {
+		t.Fatalf("unexpected alert message: %q", events[0].Message)
+	}
+	if events[0].BarIndex != 0 {
+		t.Fatalf("unexpected alert bar index: %d", events[0].BarIndex)
 	}
 }
 
@@ -1150,8 +1178,8 @@ var z = array.size(array.clear(c))
 array.get(sl, 0) + p + s + inc + idx + z
 `
 	v := compileExec(t, script, 1, 2, 3)
-	if math.Abs(v.(float64)-11.0) > 0.000001 {
-		t.Fatalf("expected 11, got %v", v)
+	if math.Abs(v.(float64)-16.0) > 0.000001 {
+		t.Fatalf("expected 16, got %v", v)
 	}
 }
 

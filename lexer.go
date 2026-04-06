@@ -147,9 +147,10 @@ func lexLine(line string, lineNum int) ([]token, error) {
 			break
 		}
 
-		if ch == '"' {
+		if ch == '"' || ch == '\'' {
+			quote := ch
 			j := i + 1
-			for j < len(line) && line[j] != '"' {
+			for j < len(line) && line[j] != quote {
 				if line[j] == '\\' && j+1 < len(line) {
 					j += 2
 					continue
@@ -160,12 +161,32 @@ func lexLine(line string, lineNum int) ([]token, error) {
 				return nil, fmt.Errorf("unterminated string at line %d", lineNum)
 			}
 			lit := line[i : j+1]
-			v, err := strconv.Unquote(lit)
+			var v string
+			var err error
+			if quote == '"' {
+				v, err = strconv.Unquote(lit)
+			} else {
+				v, err = unescapeSingleQuotedString(lit)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("bad string at line %d: %w", lineNum, err)
 			}
 			out = append(out, token{Typ: tokString, Text: v, Line: lineNum, Col: i + 1})
 			i = j + 1
+			continue
+		}
+
+		if ch == '#' {
+			j := i + 1
+			for j < len(line) && isHexDigit(line[j]) {
+				j++
+			}
+			digits := line[i+1 : j]
+			if len(digits) != 6 && len(digits) != 8 {
+				return nil, fmt.Errorf("bad color literal at line %d", lineNum)
+			}
+			out = append(out, token{Typ: tokString, Text: "#" + digits, Line: lineNum, Col: i + 1})
+			i = j
 			continue
 		}
 
@@ -295,6 +316,46 @@ func lexLine(line string, lineNum int) ([]token, error) {
 
 func isDigit(ch byte) bool {
 	return ch >= '0' && ch <= '9'
+}
+
+func isHexDigit(ch byte) bool {
+	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
+}
+
+func unescapeSingleQuotedString(lit string) (string, error) {
+	if len(lit) < 2 || lit[0] != '\'' || lit[len(lit)-1] != '\'' {
+		return "", fmt.Errorf("expected single-quoted literal")
+	}
+	s := lit[1 : len(lit)-1]
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			b.WriteByte(s[i])
+			continue
+		}
+		if i+1 >= len(s) {
+			return "", fmt.Errorf("bad escape")
+		}
+		i++
+		switch s[i] {
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case '\\':
+			b.WriteByte('\\')
+		case '\'':
+			b.WriteByte('\'')
+		case '"':
+			b.WriteByte('"')
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String(), nil
 }
 
 func isIdentStart(r rune) bool {

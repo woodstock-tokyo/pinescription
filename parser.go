@@ -5,13 +5,17 @@
 package pinescription
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 )
 
+var errNotArrowFunction = errors.New("not arrow function")
+
 type parser struct {
 	tokens []token
 	pos    int
+	exprNL int
 }
 
 func parseProgram(input string) (Program, error) {
@@ -109,13 +113,17 @@ func (p *parser) parseStmt() (Stmt, error) {
 			if err == nil {
 				return fnStmt, nil
 			}
-			p.pos = save
+			if errors.Is(err, errNotArrowFunction) {
+				p.pos = save
+			} else {
+				return Stmt{}, err
+			}
 		}
 
 		if isAssignToken(p.lookAhead(1).Typ) {
 			name := p.next().Text
 			op := p.next().Typ
-			expr, err := p.parseExpr(0)
+			expr, err := p.parseRHSExpr()
 			if err != nil {
 				return Stmt{}, err
 			}
@@ -151,15 +159,11 @@ func (p *parser) parseFunction(requireKeyword bool) (Stmt, error) {
 			if err := p.expectNewlineAndIndent(); err != nil {
 				return Stmt{}, err
 			}
-			expr, err := p.parseExpr(0)
+			body, err := p.parseBlock()
 			if err != nil {
 				return Stmt{}, err
 			}
-			p.skipNewlines()
-			if _, err := p.expect(tokDedent); err != nil {
-				return Stmt{}, err
-			}
-			fn := &FunctionDef{Name: nameTok.Text, Params: params, Expr: expr}
+			fn := &FunctionDef{Name: nameTok.Text, Params: params, Body: body}
 			return Stmt{Kind: "function", Func: fn}, nil
 		}
 		expr, err := p.parseExpr(0)
@@ -186,27 +190,27 @@ func (p *parser) tryParseArrowFunction() (Stmt, error) {
 	if err != nil {
 		return Stmt{}, err
 	}
+	if !p.arrowFollowsParenGroup() {
+		return Stmt{}, errNotArrowFunction
+	}
 	params, err := p.parseParams()
 	if err != nil {
 		return Stmt{}, err
 	}
-	if _, err := p.expect(tokArrow); err != nil {
-		return Stmt{}, err
+	if !p.match(tokArrow) {
+		return Stmt{}, errNotArrowFunction
 	}
+	p.next()
 
 	if p.match(tokNewline) {
 		if err := p.expectNewlineAndIndent(); err != nil {
 			return Stmt{}, err
 		}
-		expr, err := p.parseExpr(0)
+		body, err := p.parseBlock()
 		if err != nil {
 			return Stmt{}, err
 		}
-		p.skipNewlines()
-		if _, err := p.expect(tokDedent); err != nil {
-			return Stmt{}, err
-		}
-		fn := &FunctionDef{Name: nameTok.Text, Params: params, Expr: expr}
+		fn := &FunctionDef{Name: nameTok.Text, Params: params, Body: body}
 		return Stmt{Kind: "function", Func: fn}, nil
 	}
 
@@ -218,22 +222,75 @@ func (p *parser) tryParseArrowFunction() (Stmt, error) {
 	return Stmt{Kind: "function", Func: fn}, nil
 }
 
+func (p *parser) arrowFollowsParenGroup() bool {
+	if !p.match(tokLParen) {
+		return false
+	}
+	depth := 0
+	for i := p.pos; i < len(p.tokens); i++ {
+		switch p.tokens[i].Typ {
+		case tokLParen:
+			depth++
+		case tokRParen:
+			depth--
+			if depth == 0 {
+				if i+1 < len(p.tokens) && p.tokens[i+1].Typ == tokArrow {
+					return true
+				}
+				return false
+			}
+		}
+	}
+	return false
+}
+
 func (p *parser) parseDecl() (Stmt, error) {
 	k := p.next().Text
-	nameTok, err := p.expect(tokIdent)
-	if err != nil {
-		return Stmt{}, err
+	stmt := Stmt{Kind: "decl", Const: k == "const"}
+	if p.match(tokIdent) && isTypeKeyword(p.peek().Text) && p.lookAhead(1).Typ == tokIdent {
+		stmt.TypeName = p.next().Text
+		nameTok, err := p.expect(tokIdent)
+		if err != nil {
+			return Stmt{}, err
+		}
+		stmt.Name = nameTok.Text
+	} else {
+		nameTok, err := p.expect(tokIdent)
+		if err != nil {
+			return Stmt{}, err
+		}
+		stmt.Name = nameTok.Text
 	}
-	stmt := Stmt{Kind: "decl", Name: nameTok.Text, Const: k == "const"}
 	if p.match(tokAssign) {
 		p.next()
-		expr, err := p.parseExpr(0)
+		expr, err := p.parseRHSExpr()
 		if err != nil {
 			return Stmt{}, err
 		}
 		stmt.Expr = expr
 	}
 	return stmt, nil
+}
+
+func (p *parser) parseRHSExpr() (*Expr, error) {
+	if p.match(tokNewline) {
+		p.skipNewlines()
+		if _, err := p.expect(tokIndent); err != nil {
+			return nil, err
+		}
+		p.exprNL++
+		expr, err := p.parseExpr(0)
+		p.exprNL--
+		if err != nil {
+			return nil, err
+		}
+		p.skipNewlines()
+		if _, err := p.expect(tokDedent); err != nil {
+			return nil, err
+		}
+		return expr, nil
+	}
+	return p.parseExpr(0)
 }
 
 func (p *parser) parseQualifiedDecl() (Stmt, error) {
@@ -335,6 +392,15 @@ func (p *parser) parseIf() (Stmt, error) {
 	p.skipNewlines()
 	if p.matchIdent("else") {
 		p.next()
+		p.skipNewlines()
+		if p.matchIdent("if") {
+			nested, err := p.parseIf()
+			if err != nil {
+				return Stmt{}, err
+			}
+			stmt.Else = []Stmt{nested}
+			return stmt, nil
+		}
 		if err := p.expectNewlineAndIndent(); err != nil {
 			return Stmt{}, err
 		}
@@ -541,12 +607,18 @@ func (p *parser) parseParams() ([]string, error) {
 }
 
 func (p *parser) parseExpr(minPrec int) (*Expr, error) {
+	if p.exprNL > 0 {
+		p.skipNewlines()
+	}
 	left, err := p.parsePrefix()
 	if err != nil {
 		return nil, err
 	}
 
 	for {
+		if p.exprNL > 0 {
+			p.skipNewlines()
+		}
 		t := p.peek()
 		if t.Typ == tokLParen {
 			args, err := p.parseArgs()
@@ -581,6 +653,9 @@ func (p *parser) parseExpr(minPrec int) (*Expr, error) {
 		left = &Expr{Kind: "binary", Op: op, Left: left, Right: right}
 	}
 
+	if p.exprNL > 0 {
+		p.skipNewlines()
+	}
 	if p.match(tokQuest) && minPrec <= 0 {
 		p.next()
 		whenTrue, err := p.parseExpr(0)
@@ -601,6 +676,9 @@ func (p *parser) parseExpr(minPrec int) (*Expr, error) {
 }
 
 func (p *parser) parsePrefix() (*Expr, error) {
+	if p.exprNL > 0 {
+		p.skipNewlines()
+	}
 	t := p.peek()
 	if t.Typ == tokIdent {
 		p.next()
@@ -718,6 +796,15 @@ func (p *parser) parseArgs() ([]*Expr, error) {
 		if err != nil {
 			return nil, err
 		}
+		if p.match(tokAssign) && a != nil && a.Kind == "ident" {
+			p.next()
+			p.skipNewlines()
+			v, err := p.parseExpr(0)
+			if err != nil {
+				return nil, err
+			}
+			a = v
+		}
 		args = append(args, a)
 		if p.match(tokComma) {
 			p.next()
@@ -776,7 +863,7 @@ func (p *parser) tryParseTupleAssign() (Stmt, bool, error) {
 
 func isTypeKeyword(name string) bool {
 	switch name {
-	case "int", "float", "bool", "string", "array", "matrix", "map", "plot", "hline":
+	case "int", "float", "bool", "string", "array", "matrix", "map", "plot", "hline", "color", "line", "label", "box", "table", "linefill":
 		return true
 	default:
 		return false

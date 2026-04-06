@@ -82,8 +82,9 @@ func releaseEnvMap(m map[string]interface{}) {
 }
 
 type flow struct {
-	kind  flowKind
-	value interface{}
+	kind     flowKind
+	value    interface{}
+	hasValue bool
 }
 
 type RuntimeSnapshot struct {
@@ -99,6 +100,8 @@ type RuntimeSnapshot struct {
 type Runtime struct {
 	program Program
 	userFns map[string]UserFunction
+
+	rootNamespaces map[string]interface{}
 
 	seriesByKey         map[string]SeriesExtended
 	namedSeries         map[string]SeriesExtended
@@ -121,6 +124,7 @@ type Runtime struct {
 	currentTime     time.Time
 	startTime       time.Time
 	logSink         func(level, message string, ts time.Time)
+	alertSink       func(AlertEvent)
 	barStep         time.Duration
 	lastTimeIndex   int
 	lastBarOpen     time.Time
@@ -189,6 +193,7 @@ func (r *Runtime) Release() {
 	}
 	r.program = Program{}
 	r.userFns = nil
+	r.rootNamespaces = nil
 	r.seriesByKey = nil
 	r.namedSeries = nil
 	r.seriesExprByName = nil
@@ -209,6 +214,7 @@ func (r *Runtime) Release() {
 	r.currentTime = time.Time{}
 	r.startTime = time.Time{}
 	r.logSink = nil
+	r.alertSink = nil
 	r.barStep = 0
 	r.lastTimeIndex = -1
 	r.lastBarOpen = time.Time{}
@@ -252,6 +258,7 @@ func newRuntime(
 	expectedBars int,
 	loadSeries func(symbol, valueType string) (SeriesExtended, error),
 	logSink func(level, message string, ts time.Time),
+	alertSink func(AlertEvent),
 ) *Runtime {
 	if seriesByKey == nil {
 		seriesByKey = map[string]SeriesExtended{}
@@ -277,6 +284,7 @@ func newRuntime(
 		currentTime:         currentTime,
 		startTime:           startTime,
 		logSink:             logSink,
+		alertSink:           alertSink,
 		lastTimeIndex:       -1,
 		expectedBars:        expectedBars,
 		lastValue:           math.NaN(),
@@ -299,7 +307,113 @@ func newRuntime(
 		loopBindings:        nil,
 	}
 	r.initTimeframeCache()
+	r.initRootEnv()
 	return r
+}
+
+func (r *Runtime) initRootEnv() {
+	if r == nil || len(r.envStack) == 0 {
+		return
+	}
+	root := r.envStack[0]
+	root["na"] = nil
+	root["last_bar_index"] = float64(r.expectedBars - 1)
+	barstate := map[string]interface{}{"islast": false}
+	syminfo := map[string]interface{}{"ticker": r.activeSymbol}
+	alertNs := map[string]interface{}{
+		"freq_all":                "all",
+		"freq_once_per_bar":       "once_per_bar",
+		"freq_once_per_bar_close": "once_per_bar_close",
+	}
+	displayNs := map[string]interface{}{"none": float64(0), "all": float64(1), "status_line": float64(0)}
+	positionNs := map[string]interface{}{"top_right": float64(0), "bottom_right": float64(1), "top_left": float64(2), "bottom_left": float64(3)}
+	xlocNs := map[string]interface{}{"bar_index": float64(0), "bar_time": float64(1)}
+	ylocNs := map[string]interface{}{"price": float64(0), "abovebar": float64(1), "belowbar": float64(2)}
+	extendNs := map[string]interface{}{"none": float64(0), "right": float64(1), "left": float64(2), "both": float64(3)}
+	sizeNs := map[string]interface{}{"tiny": float64(0), "small": float64(1), "normal": float64(2), "large": float64(3), "huge": float64(4), "auto": float64(5)}
+	textNs := map[string]interface{}{"align_left": float64(0), "align_center": float64(1), "align_right": float64(2)}
+	formatNs := map[string]interface{}{"volume": "volume", "price": "price", "percent": "percent"}
+	colorNs := map[string]interface{}{
+		"white":       "#ffffff",
+		"black":       "#000000",
+		"gray":        "#808080",
+		"silver":      "#c0c0c0",
+		"red":         "#ff0000",
+		"green":       "#00ff00",
+		"blue":        "#0000ff",
+		"yellow":      "#ffff00",
+		"orange":      "#ffa500",
+		"transparent": "#00000000",
+	}
+	lineNs := map[string]interface{}{"style_solid": float64(0), "style_dashed": float64(1), "style_dotted": float64(2)}
+	labelNs := map[string]interface{}{"style_label_left": float64(0), "style_label_right": float64(1), "style_label_up": float64(2), "style_label_down": float64(3)}
+
+	root["barstate"] = barstate
+	root["syminfo"] = syminfo
+	root["alert"] = alertNs
+	root["display"] = displayNs
+	root["position"] = positionNs
+	root["xloc"] = xlocNs
+	root["yloc"] = ylocNs
+	root["extend"] = extendNs
+	root["size"] = sizeNs
+	root["text"] = textNs
+	root["format"] = formatNs
+	root["color"] = colorNs
+	root["line"] = lineNs
+	root["label"] = labelNs
+
+	r.rootNamespaces = map[string]interface{}{
+		"barstate": barstate,
+		"syminfo":  syminfo,
+		"alert":    alertNs,
+		"display":  displayNs,
+		"position": positionNs,
+		"xloc":     xlocNs,
+		"yloc":     ylocNs,
+		"extend":   extendNs,
+		"size":     sizeNs,
+		"text":     textNs,
+		"format":   formatNs,
+		"color":    colorNs,
+		"line":     lineNs,
+		"label":    labelNs,
+	}
+}
+
+func (r *Runtime) SetBarIndex(i int) {
+	r.barIndex = i
+	if len(r.envStack) == 0 {
+		return
+	}
+	root := r.envStack[0]
+	root["last_bar_index"] = float64(r.expectedBars - 1)
+	isLast := i == r.expectedBars-1
+	if r.rootNamespaces != nil {
+		if bs, ok := r.rootNamespaces["barstate"].(map[string]interface{}); ok {
+			bs["islast"] = isLast
+		}
+	}
+	if bs, ok := root["barstate"].(map[string]interface{}); ok {
+		bs["islast"] = isLast
+	}
+}
+
+func (r *Runtime) emitAlert(message, frequency string) {
+	if r == nil || r.alertSink == nil {
+		return
+	}
+	idx := r.effectiveBarIndex()
+	if idx < 0 {
+		idx = 0
+	}
+	r.alertSink(AlertEvent{
+		Message:   message,
+		Frequency: frequency,
+		BarIndex:  idx,
+		Time:      r.barCloseTime().UTC(),
+		Symbol:    r.activeSymbol,
+	})
 }
 
 func (r *Runtime) initTimeframeCache() {
@@ -607,6 +721,8 @@ func (r *Runtime) commitBar() error {
 }
 
 func (r *Runtime) execStmtList(stmts []Stmt) (flow, error) {
+	var last interface{}
+	hasLast := false
 	for _, stmt := range stmts {
 		fl, err := r.execStmt(stmt)
 		if err != nil {
@@ -615,8 +731,12 @@ func (r *Runtime) execStmtList(stmts []Stmt) (flow, error) {
 		if fl.kind != flowNone {
 			return fl, nil
 		}
+		if fl.hasValue {
+			last = fl.value
+			hasLast = true
+		}
 	}
-	return flow{kind: flowNone}, nil
+	return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 }
 
 func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
@@ -664,9 +784,18 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 		if err != nil {
 			return flow{}, err
 		}
-		items, ok := rhs.([]interface{})
-		if !ok {
-			return flow{}, fmt.Errorf("tuple assignment requires tuple/array RHS")
+		var items []interface{}
+		if rhs == nil {
+			items = nil
+		} else {
+			switch v := rhs.(type) {
+			case []interface{}:
+				items = v
+			case *pineArray:
+				items = v.items
+			default:
+				return flow{}, fmt.Errorf("tuple assignment requires tuple/array RHS")
+			}
 		}
 		for i, name := range stmt.TupleNames {
 			if name == "_" {
@@ -689,7 +818,7 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 		if n, ok := toFloat(v); ok {
 			r.lastValue = n
 		}
-		return flow{kind: flowNone}, nil
+		return flow{kind: flowNone, value: v, hasValue: true}, nil
 	case "if":
 		c, err := r.eval(stmt.Cond)
 		if err != nil {
@@ -703,6 +832,8 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 	case "switch":
 		return r.execSwitch(stmt)
 	case "while":
+		var last interface{}
+		hasLast := false
 		for {
 			c, err := r.eval(stmt.Cond)
 			if err != nil {
@@ -717,15 +848,19 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 			}
 			switch fl.kind {
 			case flowNone:
+				if fl.hasValue {
+					last = fl.value
+					hasLast = true
+				}
 			case flowBreak:
-				return flow{kind: flowNone}, nil
+				return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 			case flowContinue:
 				continue
 			default:
 				return fl, nil
 			}
 		}
-		return flow{kind: flowNone}, nil
+		return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 	case "for":
 		fromV, err := r.eval(stmt.From)
 		if err != nil {
@@ -749,6 +884,8 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 			return flow{}, errors.New("for step cannot be 0")
 		}
 		if disableLoopIteratorFastPath {
+			var last interface{}
+			hasLast := false
 			cmp := func(i float64) bool {
 				if step > 0 {
 					return i <= to
@@ -763,15 +900,19 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 				}
 				switch fl.kind {
 				case flowNone:
+					if fl.hasValue {
+						last = fl.value
+						hasLast = true
+					}
 				case flowBreak:
-					return flow{kind: flowNone}, nil
+					return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 				case flowContinue:
 					continue
 				default:
 					return fl, nil
 				}
 			}
-			return flow{kind: flowNone}, nil
+			return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 		}
 
 		if r.consts[stmt.ForVar] {
@@ -791,6 +932,8 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 			r.loopBindings = r.loopBindings[:len(r.loopBindings)-1]
 		}()
 
+		var last interface{}
+		hasLast := false
 		cmp := func(i float64) bool {
 			if step > 0 {
 				return i <= to
@@ -805,15 +948,19 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 			}
 			switch fl.kind {
 			case flowNone:
+				if fl.hasValue {
+					last = fl.value
+					hasLast = true
+				}
 			case flowBreak:
-				return flow{kind: flowNone}, nil
+				return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 			case flowContinue:
 				continue
 			default:
 				return fl, nil
 			}
 		}
-		return flow{kind: flowNone}, nil
+		return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 	case "break":
 		return flow{kind: flowBreak}, nil
 	case "continue":
@@ -1028,10 +1175,7 @@ func (r *Runtime) execSwitch(stmt Stmt) (flow, error) {
 		if err != nil {
 			return flow{}, err
 		}
-		if fl.kind != flowNone {
-			return fl, nil
-		}
-		break
+		return fl, nil
 	}
 
 	if !matched && len(stmt.Default) > 0 {
@@ -1238,7 +1382,7 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 		return nil, errors.New("call target must be identifier")
 	}
 	name := expr.Left.Name
-	if strings.HasPrefix(name, "strategy.") || strings.HasPrefix(name, "alert") || strings.HasPrefix(name, "plot") {
+	if strings.HasPrefix(name, "strategy.") || strings.HasPrefix(name, "plot") {
 		return nil, fmt.Errorf("unsupported feature: %s", name)
 	}
 
@@ -1425,6 +1569,8 @@ func (r *Runtime) callScriptFunction(fn FunctionDef, args []interface{}) (interf
 	if fn.Expr != nil {
 		return r.eval(fn.Expr)
 	}
+	var last interface{}
+	hasLast := false
 	for _, stmt := range fn.Body {
 		fl, err := r.execStmt(stmt)
 		if err != nil {
@@ -1433,6 +1579,13 @@ func (r *Runtime) callScriptFunction(fn FunctionDef, args []interface{}) (interf
 		if fl.kind == flowReturn {
 			return fl.value, nil
 		}
+		if fl.kind == flowNone && fl.hasValue {
+			last = fl.value
+			hasLast = true
+		}
+	}
+	if hasLast {
+		return last, nil
 	}
 	return nil, nil
 }
@@ -1791,9 +1944,16 @@ func (r *Runtime) resolveDottedIdentifier(name string) (interface{}, bool, error
 	if len(parts) < 2 {
 		return nil, false, nil
 	}
-	cur, ok := r.lookupEnvValue(parts[0])
+	base := parts[0]
+	cur, ok := interface{}(nil), false
+	if r.rootNamespaces != nil {
+		cur, ok = r.rootNamespaces[base]
+	}
 	if !ok {
-		return nil, false, nil
+		cur, ok = r.lookupEnvValue(base)
+		if !ok {
+			return nil, false, nil
+		}
 	}
 	for i := 1; i < len(parts); i++ {
 		next, handled, err := objectFieldGet(cur, parts[i])

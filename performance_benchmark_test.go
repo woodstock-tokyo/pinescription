@@ -39,7 +39,7 @@ func benchmarkRuntimeWithClose(size int) *Runtime {
 
 	seriesByKey := map[string]SeriesExtended{makeSeriesKey("BENCH", "close"): q}
 	valueTypesBySymbol := map[string]map[string]bool{"BENCH": {"close": true}}
-	rt := newRuntime(Program{}, nil, seriesByKey, valueTypesBySymbol, "BENCH", "close", "1D", "regular", time.Now().UTC(), time.Now().UTC(), q.Length(), nil, nil)
+	rt := newRuntime(Program{}, nil, seriesByKey, valueTypesBySymbol, "BENCH", "close", "1D", "regular", time.Now().UTC(), time.Now().UTC(), q.Length(), nil, nil, nil)
 	rt.barIndex = q.Length() - 1
 	return rt
 }
@@ -486,7 +486,7 @@ func BenchmarkExecuteBollingerStreamingUpdates(b *testing.B) {
 
 		rt := newRuntime(program, nil, seriesByKey, valueTypesBySymbol, symbol, "close", "1D", "regular", time.Now().UTC(), time.Now().UTC(), totalBars+8, func(sym, vt string) (SeriesExtended, error) {
 			return provider.GetSeries(makeSeriesKey(sym, vt))
-		}, nil)
+		}, nil, nil)
 
 		initialLen := provider.closeQ.Length()
 		for i := 0; i < initialLen; i++ {
