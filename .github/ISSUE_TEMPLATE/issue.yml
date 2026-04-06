@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 Woodstock K.K.
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+name: Issue
+description: Report a bug or other problem
+title: "[Issue]: "
+body:
+  - type: input
+    id: base
+    attributes:
+      label: Version / commit
+      description: Which version, tag, or commit SHA is this issue based on?
+      placeholder: "e.g. v0.1.0 or 1a2b3c4"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Issue description
+      description: What is the problem?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+      description: What did you expect to happen?
+    validations:
+      required: true
