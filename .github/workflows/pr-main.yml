@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: 2026 Woodstock K.K.
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+name: PR checks
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  pr-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - name: Go version
+        run: go version
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Lint (go vet)
+        run: go vet ./...
+
+      - name: Check formatting (gofmt)
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt'ed:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Install reuse-tool (for addlicense)
+        run: |
+          python3 -m pip install --user reuse==6.2.0
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Check addlicense applied (make addlicense)
+        run: |
+          make addlicense
+          git diff --exit-code
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Working tree is dirty after running make addlicense:"
+            git status --porcelain
+            exit 1
+          fi

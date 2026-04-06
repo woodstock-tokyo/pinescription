@@ -11,4 +11,4 @@ LICENSE_TYPE ?= AGPL-3.0-only
 addlicense:
 	find . -type f -name '*.go' -print0 | xargs -0 $(ADDLICENSE) annotate \
 		--copyright "$(COPYRIGHT_HOLDER)" --license "$(LICENSE_TYPE)"
-	$(ADDLICENSE) annotate --copyright "$(COPYRIGHT_HOLDER)" --license "$(LICENSE_TYPE)" go.mod go.sum .gitignore .pre-commit-config.yaml Makefile README.md
+	$(ADDLICENSE) annotate --copyright "$(COPYRIGHT_HOLDER)" --license "$(LICENSE_TYPE)" go.mod go.sum .gitignore .pre-commit-config.yaml Makefile README.md SECURITY.md .github/workflows/pr-main.yml
