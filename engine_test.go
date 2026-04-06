@@ -134,6 +134,61 @@ func compileExec(t *testing.T, script string, values ...float64) interface{} {
 	return v
 }
 
+func TestNamedArgsScriptFunctionOutOfOrder(t *testing.T) {
+	v := compileExec(t, "foo(b = 2, a = 5)\nfoo(a, b) => a * 10 + b", 1, 2, 3)
+	got, ok := v.(float64)
+	if !ok {
+		t.Fatalf("expected float64 result, got %T (%v)", v, v)
+	}
+	if got != 52 {
+		t.Fatalf("expected 52, got %v", got)
+	}
+}
+
+func TestNamedArgsTypeConstructorUsesDefaultsForSparseArgs(t *testing.T) {
+	v := compileExec(t, "type Pair\n    float left = 3\n    float right = 7\np = Pair.new(right = 11)\np.left + p.right", 1, 2, 3)
+	got, ok := v.(float64)
+	if !ok {
+		t.Fatalf("expected float64 result, got %T (%v)", v, v)
+	}
+	if got != 14 {
+		t.Fatalf("expected 14, got %v", got)
+	}
+}
+
+func TestNamedArgsBuiltinBindingForInputsAndBox(t *testing.T) {
+	v := compileExec(t, "x = input.int(20, 'len', group = 'grp', minval = 1)\nb = box.new(1, 2, 3, 4, bgcolor = color.new(color.red, 25))\nx + box.get_bottom(b)", 1, 2, 3)
+	got, ok := v.(float64)
+	if !ok {
+		t.Fatalf("expected float64 result, got %T (%v)", v, v)
+	}
+	if got != 24 {
+		t.Fatalf("expected 24, got %v", got)
+	}
+}
+
+func TestNamedArgsBuiltinBindingForBarcolor(t *testing.T) {
+	v := compileExec(t, "barcolor(color.green, title = 'Volume Weighted Colored Bars', editable = false)\n1", 1, 2, 3)
+	got, ok := v.(float64)
+	if !ok {
+		t.Fatalf("expected float64 result, got %T (%v)", v, v)
+	}
+	if got != 1 {
+		t.Fatalf("expected 1, got %v", got)
+	}
+}
+
+func TestNamedArgsBuiltinBindingForIndicatorAndTableCell(t *testing.T) {
+	v := compileExec(t, "indicator('Named Args', 'NA', true, max_bars_back = 5000, max_boxes_count = 500)\nt = table.new(position.bottom_right, 1, 1)\ntable.cell(t, 0, 0, 'x', text_size = size.normal, text_color = color.teal, tooltip = 'ok')\n1", 1, 2, 3)
+	got, ok := v.(float64)
+	if !ok {
+		t.Fatalf("expected float64 result, got %T (%v)", v, v)
+	}
+	if got != 1 {
+		t.Fatalf("expected 1, got %v", got)
+	}
+}
+
 func TestArithmeticAndVariables(t *testing.T) {
 	script := `
 var x = 1
@@ -1220,6 +1275,34 @@ s + av + f + l + li + mx + mx2 + mn + mn2 + med + mode + rg + pl + pn + pnt + pr
 	v := compileExec(t, script, 1, 2, 3)
 	if math.Abs(v.(float64)-140.4333333333) > 0.000001 {
 		t.Fatalf("expected ~140.4333333333, got %v", v)
+	}
+}
+
+func TestArrayInsertMutatesPineArrayWithoutReassignment(t *testing.T) {
+	v := compileExec(t, `
+var a = array.new_int(0)
+a = array.push(a, 1)
+a = array.push(a, 3)
+array.insert(a, 1, 2)
+array.get(a, 1) * 10 + array.size(a)
+`, 1, 2, 3)
+	if math.Abs(v.(float64)-23.0) > 0.000001 {
+		t.Fatalf("expected 23, got %v", v)
+	}
+}
+
+func TestArrayDerivedArraysStayMutableWithoutReassignment(t *testing.T) {
+	v := compileExec(t, `
+var a = array.from(-1.0, -2.0)
+var b = array.copy(a)
+var c = array.abs(a)
+array.push(a, 3.0)
+array.push(b, 4.0)
+array.push(c, 5.0)
+array.size(a) + array.size(b) * 10 + array.size(c) * 100
+`, 1, 2, 3)
+	if math.Abs(v.(float64)-333.0) > 0.000001 {
+		t.Fatalf("expected 333, got %v", v)
 	}
 }
 

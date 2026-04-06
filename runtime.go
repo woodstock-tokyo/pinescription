@@ -187,6 +187,36 @@ type loopBinding struct {
 	value float64
 }
 
+type callParamSpec struct {
+	Names []string
+}
+
+func (s callParamSpec) indexOf(name string) int {
+	for i, candidate := range s.Names {
+		if candidate == name {
+			return i
+		}
+	}
+	return -1
+}
+
+var builtinCallParamSpecs = map[string]callParamSpec{
+	"alert":        {Names: []string{"message", "freq"}},
+	"barcolor":     {Names: []string{"color", "offset", "editable", "show_last", "title", "display"}},
+	"box.new":      {Names: []string{"left", "top", "right", "bottom", "border_color", "border_width", "border_style", "extend", "xloc", "bgcolor", "text", "text_size", "text_color", "text_halign", "text_valign", "text_wrap", "force_overlay"}},
+	"color.new":    {Names: []string{"color", "transp"}},
+	"indicator":    {Names: []string{"title", "shorttitle", "overlay", "format", "precision", "scale", "max_bars_back", "timeframe", "timeframe_gaps", "explicit_plot_zorder", "max_lines_count", "max_labels_count", "max_boxes_count", "max_polylines_count", "dynamic_requests", "behind_chart"}},
+	"input":        {Names: []string{"defval", "title", "tooltip", "inline", "group", "display"}},
+	"input.bool":   {Names: []string{"defval", "title", "tooltip", "inline", "group", "display"}},
+	"input.color":  {Names: []string{"defval", "title", "tooltip", "inline", "group", "display"}},
+	"input.float":  {Names: []string{"defval", "title", "tooltip", "inline", "group", "display", "step", "minval", "maxval", "confirm"}},
+	"input.int":    {Names: []string{"defval", "title", "tooltip", "inline", "group", "display", "step", "minval", "maxval", "confirm"}},
+	"input.source": {Names: []string{"defval", "title", "tooltip", "inline", "group", "display"}},
+	"input.string": {Names: []string{"defval", "title", "tooltip", "inline", "group", "display", "options", "confirm"}},
+	"table.cell":   {Names: []string{"table_id", "column", "row", "text", "width", "height", "text_color", "text_halign", "text_valign", "text_size", "bgcolor", "tooltip", "text_font_family"}},
+	"table.new":    {Names: []string{"position", "columns", "rows", "bgcolor", "frame_color", "frame_width", "border_color", "border_width"}},
+}
+
 func (r *Runtime) Release() {
 	if r == nil {
 		return
@@ -1346,6 +1376,8 @@ func (r *Runtime) eval(expr *Expr) (interface{}, error) {
 		return r.eval(expr.Else)
 	case exprKindCall:
 		return r.evalCall(expr)
+	case exprKindNamedArg:
+		return nil, fmt.Errorf("named argument %q cannot be evaluated outside call binding", expr.Name)
 	case exprKindCiscClamp:
 		if len(expr.Args) != 3 {
 			return nil, fmt.Errorf("invalid cisc_clamp args")
@@ -1390,59 +1422,37 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 	if len(expr.Args) <= 4 {
 		useArgPool = false
 	}
-	var args []interface{}
-	var smallArgs [4]interface{}
-	if useArgPool {
-		args = acquireInterfaceSlice(len(expr.Args))
-	} else if len(expr.Args) <= len(smallArgs) {
-		args = smallArgs[:0]
-	} else {
-		args = make([]interface{}, 0, len(expr.Args))
+	rawArgs, args, releaseArgs, err := r.prepareCallArgs(name, expr.Args, useArgPool)
+	if err != nil {
+		return nil, err
 	}
-	releaseArgs := func() {
-		if useArgPool {
-			releaseInterfaceSlice(args)
-		}
-	}
-	for _, argExpr := range expr.Args {
-		v, err := r.eval(argExpr)
-		if err != nil {
-			releaseArgs()
-			return nil, err
-		}
-		args = append(args, v)
-	}
+	defer releaseArgs()
+
 	if expr.BID != builtinFastUnknown {
-		if v, ok, err := r.callBuiltinFast(expr.BID, expr.Args, args); ok || err != nil {
-			releaseArgs()
+		if v, ok, err := r.callBuiltinFast(expr.BID, rawArgs, args); ok || err != nil {
 			return v, err
 		}
 	}
 
-	if v, ok, err := r.callBuiltin(name, expr.Args, args); ok || err != nil {
-		releaseArgs()
+	if v, ok, err := r.callBuiltin(name, rawArgs, args); ok || err != nil {
 		return v, err
 	}
 	if typeName, ok := splitTypeConstructorCallName(name); ok {
 		if typeDef, exists := r.program.Types[typeName]; exists {
-			instance, err := r.instantiateType(typeDef, args)
-			releaseArgs()
+			instance, err := r.instantiateType(typeDef, rawArgs, args)
 			return instance, err
 		}
 	}
 	if fn, ok := r.program.Functions[name]; ok {
 		result, err := r.callScriptFunction(fn, args)
-		releaseArgs()
 		return result, err
 	}
 	if userFn, ok := r.userFns[name]; ok {
 		if useArgPool {
 			copied := append([]interface{}(nil), args...)
-			releaseArgs()
 			return userFn(copied...)
 		}
 		result, err := userFn(args...)
-		releaseArgs()
 		return result, err
 	}
 	if recvName, methodName, ok := splitMethodCallName(name); ok {
@@ -1459,24 +1469,150 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 			methodArgs = append(methodArgs, args...)
 			if builtinName := methodBuiltinNameForReceiver(recv, methodName); builtinName != "" {
 				if v, ok, err := r.callBuiltin(builtinName, nil, methodArgs); ok || err != nil {
-					releaseArgs()
 					return v, err
 				}
 			}
 			if fn, ok := r.program.Functions[methodName]; ok {
 				result, err := r.callScriptFunction(fn, methodArgs)
-				releaseArgs()
 				return result, err
 			}
 			if userFn, ok := r.userFns[methodName]; ok {
 				result, err := userFn(methodArgs...)
-				releaseArgs()
 				return result, err
 			}
 		}
 	}
-	releaseArgs()
 	return nil, fmt.Errorf("unknown function: %s", name)
+}
+
+func (r *Runtime) prepareCallArgs(name string, argExprs []*Expr, useArgPool bool) ([]*Expr, []interface{}, func(), error) {
+	if !callHasNamedArgs(argExprs) {
+		var args []interface{}
+		var smallArgs [4]interface{}
+		if useArgPool {
+			args = acquireInterfaceSlice(len(argExprs))
+		} else if len(argExprs) <= len(smallArgs) {
+			args = smallArgs[:0]
+		} else {
+			args = make([]interface{}, 0, len(argExprs))
+		}
+		release := func() {
+			if useArgPool {
+				releaseInterfaceSlice(args)
+			}
+		}
+		for _, argExpr := range argExprs {
+			v, err := r.eval(argExpr)
+			if err != nil {
+				release()
+				return nil, nil, nil, err
+			}
+			args = append(args, v)
+		}
+		return argExprs, args, release, nil
+	}
+
+	spec, ok := r.callParamSpec(name)
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("named arguments are not supported for %s", name)
+	}
+	boundRaw, err := bindNamedCallArgs(name, argExprs, spec)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var args []interface{}
+	var smallArgs [4]interface{}
+	if useArgPool {
+		args = acquireInterfaceSlice(len(boundRaw))
+	} else if len(boundRaw) <= len(smallArgs) {
+		args = smallArgs[:0]
+	} else {
+		args = make([]interface{}, 0, len(boundRaw))
+	}
+	release := func() {
+		if useArgPool {
+			releaseInterfaceSlice(args)
+		}
+	}
+	for _, rawArg := range boundRaw {
+		if rawArg == nil {
+			args = append(args, nil)
+			continue
+		}
+		v, err := r.eval(rawArg)
+		if err != nil {
+			release()
+			return nil, nil, nil, err
+		}
+		args = append(args, v)
+	}
+	return boundRaw, args, release, nil
+}
+
+func callHasNamedArgs(argExprs []*Expr) bool {
+	for _, arg := range argExprs {
+		if arg != nil && arg.Kind == "named_arg" {
+			return true
+		}
+	}
+	return false
+}
+
+func bindNamedCallArgs(name string, argExprs []*Expr, spec callParamSpec) ([]*Expr, error) {
+	assigned := make([]bool, len(spec.Names))
+	bound := make([]*Expr, len(spec.Names))
+	nextPositional := 0
+	highestAssigned := -1
+	for _, arg := range argExprs {
+		if arg != nil && arg.Kind == "named_arg" {
+			idx := spec.indexOf(arg.Name)
+			if idx < 0 {
+				return nil, fmt.Errorf("unknown named argument %q for %s", arg.Name, name)
+			}
+			if assigned[idx] {
+				return nil, fmt.Errorf("duplicate argument %q for %s", arg.Name, name)
+			}
+			bound[idx] = arg.NamedArgValue()
+			assigned[idx] = true
+			if idx > highestAssigned {
+				highestAssigned = idx
+			}
+			continue
+		}
+		for nextPositional < len(spec.Names) && assigned[nextPositional] {
+			nextPositional++
+		}
+		if nextPositional >= len(spec.Names) {
+			return nil, fmt.Errorf("too many arguments for %s", name)
+		}
+		bound[nextPositional] = arg
+		assigned[nextPositional] = true
+		if nextPositional > highestAssigned {
+			highestAssigned = nextPositional
+		}
+		nextPositional++
+	}
+	if highestAssigned < 0 {
+		return nil, nil
+	}
+	return bound[:highestAssigned+1], nil
+}
+
+func (r *Runtime) callParamSpec(name string) (callParamSpec, bool) {
+	if fn, ok := r.program.Functions[name]; ok {
+		return callParamSpec{Names: append([]string(nil), fn.Params...)}, true
+	}
+	if typeName, ok := splitTypeConstructorCallName(name); ok {
+		if typeDef, exists := r.program.Types[typeName]; exists {
+			names := make([]string, 0, len(typeDef.Fields))
+			for _, field := range typeDef.Fields {
+				names = append(names, field.Name)
+			}
+			return callParamSpec{Names: names}, true
+		}
+	}
+	spec, ok := builtinCallParamSpecs[name]
+	return spec, ok
 }
 
 func splitMethodCallName(name string) (string, string, bool) {
@@ -1520,13 +1656,13 @@ func methodBuiltinNameForReceiver(receiver interface{}, method string) string {
 	}
 }
 
-func (r *Runtime) instantiateType(typeDef TypeDef, args []interface{}) (interface{}, error) {
+func (r *Runtime) instantiateType(typeDef TypeDef, rawArgs []*Expr, args []interface{}) (interface{}, error) {
 	if len(args) > len(typeDef.Fields) {
 		return nil, fmt.Errorf("%s.new expects at most %d args", typeDef.Name, len(typeDef.Fields))
 	}
 	instance := &customTypeInstance{TypeName: typeDef.Name, Fields: map[string]interface{}{}}
 	for i, field := range typeDef.Fields {
-		if i < len(args) {
+		if i < len(rawArgs) && rawArgs[i] != nil {
 			instance.Fields[field.Name] = args[i]
 			continue
 		}

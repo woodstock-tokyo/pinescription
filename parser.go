@@ -797,13 +797,14 @@ func (p *parser) parseArgs() ([]*Expr, error) {
 			return nil, err
 		}
 		if p.match(tokAssign) && a != nil && a.Kind == "ident" {
+			name := a.Name
 			p.next()
 			p.skipNewlines()
 			v, err := p.parseExpr(0)
 			if err != nil {
 				return nil, err
 			}
-			a = v
+			a = &Expr{Kind: "named_arg", Name: name, Right: v}
 		}
 		args = append(args, a)
 		if p.match(tokComma) {

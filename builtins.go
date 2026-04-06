@@ -592,10 +592,7 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 		}
 		out := append([]interface{}{}, as...)
 		out = append(out, bs...)
-		if _, ok := args[0].(*pineArray); ok {
-			return &pineArray{items: out}, true, nil
-		}
-		if _, ok := args[1].(*pineArray); ok {
+		if isPineArrayArg(args[0]) || isPineArrayArg(args[1]) {
 			return &pineArray{items: out}, true, nil
 		}
 		return out, true, nil
@@ -624,7 +621,7 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 			from = to
 		}
 		out := append([]interface{}{}, arr[from:to]...)
-		if _, ok := args[0].(*pineArray); ok {
+		if isPineArrayArg(args[0]) {
 			return &pineArray{items: out}, true, nil
 		}
 		return out, true, nil
@@ -678,28 +675,41 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 		if err != nil {
 			return nil, true, err
 		}
-		return append([]interface{}{}, arr...), true, nil
+		out := append([]interface{}{}, arr...)
+		if isPineArrayArg(args[0]) {
+			return &pineArray{items: out}, true, nil
+		}
+		return out, true, nil
 	case "array.from":
 		out := make([]interface{}, len(args))
 		copy(out, args)
-		return out, true, nil
+		return &pineArray{items: out}, true, nil
 	case "array.insert":
 		if len(args) != 3 {
 			return nil, true, fmt.Errorf("array.insert expects 3 args")
 		}
-		arr, err := asArrayArg(args[0], "array.insert")
-		if err != nil {
-			return nil, true, err
-		}
 		idxF, _ := toFloat(args[1])
 		idx := int(idxF)
-		if idx < 0 || idx > len(arr) {
-			return nil, true, fmt.Errorf("array.insert index out of range")
+		switch a := args[0].(type) {
+		case *pineArray:
+			if idx < 0 || idx > len(a.items) {
+				return nil, true, fmt.Errorf("array.insert index out of range")
+			}
+			a.items = append(a.items, nil)
+			copy(a.items[idx+1:], a.items[idx:])
+			a.items[idx] = args[2]
+			return a, true, nil
+		case []interface{}:
+			if idx < 0 || idx > len(a) {
+				return nil, true, fmt.Errorf("array.insert index out of range")
+			}
+			a = append(a, nil)
+			copy(a[idx+1:], a[idx:])
+			a[idx] = args[2]
+			return a, true, nil
+		default:
+			return nil, true, fmt.Errorf("array.insert requires array")
 		}
-		arr = append(arr, nil)
-		copy(arr[idx+1:], arr[idx:])
-		arr[idx] = args[2]
-		return arr, true, nil
 	case "array.first":
 		if len(args) != 1 {
 			return nil, true, fmt.Errorf("array.first expects 1 arg")
@@ -778,6 +788,9 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 				return nil, true, fmt.Errorf("array.abs requires numeric array")
 			}
 			out[i] = math.Abs(f)
+		}
+		if isPineArrayArg(args[0]) {
+			return &pineArray{items: out}, true, nil
 		}
 		return out, true, nil
 	case "array.sum":
@@ -1556,6 +1569,11 @@ func asArrayArg(v interface{}, fn string) ([]interface{}, error) {
 	default:
 		return nil, fmt.Errorf("%s requires array", fn)
 	}
+}
+
+func isPineArrayArg(v interface{}) bool {
+	_, ok := v.(*pineArray)
+	return ok
 }
 
 func arrayNumericValues(v interface{}, fn string) ([]float64, error) {

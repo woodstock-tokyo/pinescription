@@ -87,6 +87,8 @@ func lowerExpr(expr *Expr) {
 	}
 
 	switch expr.Kind {
+	case "named_arg":
+		lowerExpr(expr.NamedArgValue())
 	case "unary":
 		expr.UOp = unaryOpcodeFromString(expr.Op)
 	case "binary":
