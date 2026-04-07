@@ -209,7 +209,7 @@ The example consists of four principal components: the caller in `examples/basic
 %%{init: {"themeVariables": {"fontSize": "12px"}, "flowchart": {"nodeSpacing": 18, "rankSpacing": 22, "diagramPadding": 4}} }%%
 flowchart TD
 	A["main.go"] --> B["Engine<br/>NewEngine()"]
-	B --> C["RegisterProvider()"]
+	B --> C["RegisterMarketDataProvider()"]
 	C --> D["demoProvider"]
 	B --> E["Default symbol<br/>DEMO"]
 	B --> F["Compile()"]
@@ -253,7 +253,7 @@ sequenceDiagram
 	App->>Eng: Execute(bytecode)
 	Eng->>Eng: ExecuteWithRuntime(bytecode)
 	Eng->>Prov: GetTimeframe()/GetSession()
-	Eng->>Prov: GetSymbols()/GetValueTypes()
+	Eng->>Prov: GetSymbols()/GetValuesTypes()
 	Eng->>Prov: GetSeries("DEMO|close")
 	Eng->>RT: newRuntime(...)
 
