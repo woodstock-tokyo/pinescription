@@ -101,13 +101,13 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 		return truthy(args[0]), true, nil
 	case "string", "str.tostring":
 		if len(args) < 1 || len(args) > 2 {
-			return nil, true, fmt.Errorf("string() expects 1 or 2 args")
+			return nil, true, fmt.Errorf("%s() expects 1 or 2 args", name)
 		}
 		return toString(args[0]), true, nil
 	case "indicator":
 		return nil, true, nil
 	case "input", "input.int", "input.float", "input.bool", "input.string", "input.color", "input.time", "input.session", "input.symbol", "input.source":
-		if len(args) == 0 {
+		if len(args) == 0 || args[0] == nil {
 			switch name {
 			case "input.bool":
 				return false, true, nil

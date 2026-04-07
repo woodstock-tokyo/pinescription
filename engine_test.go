@@ -167,6 +167,40 @@ func TestNamedArgsBuiltinBindingForInputsAndBox(t *testing.T) {
 	}
 }
 
+func TestNamedArgsInputDefaultWhenDefvalOmitted(t *testing.T) {
+	v := compileExec(t, "input.int(title = 'x', minval = 1)", 1, 2, 3)
+	got, ok := v.(float64)
+	if !ok {
+		t.Fatalf("expected float64 result, got %T (%v)", v, v)
+	}
+	if got != 0 {
+		t.Fatalf("expected default 0, got %v", got)
+	}
+}
+
+func TestNamedArgsBuiltinRejectsMissingRequiredPrefixParam(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 1, 2, 3))
+	e.SetDefaultSymbol("TEST")
+
+	for _, tc := range []struct {
+		script string
+		want   string
+	}{
+		{script: "color.new(transp = 25)", want: `missing required argument "color" for color.new`},
+		{script: "box.new(bottom = 4)", want: `missing required argument "left" for box.new`},
+	} {
+		b, err := e.Compile(tc.script)
+		if err != nil {
+			t.Fatalf("compile failed for %q: %v", tc.script, err)
+		}
+		_, err = e.Execute(b)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("expected runtime error containing %q for %q, got %v", tc.want, tc.script, err)
+		}
+	}
+}
+
 func TestNamedArgsBuiltinBindingForBarcolor(t *testing.T) {
 	v := compileExec(t, "barcolor(color.green, title = 'Volume Weighted Colored Bars', editable = false)\n1", 1, 2, 3)
 	got, ok := v.(float64)

@@ -188,7 +188,8 @@ type loopBinding struct {
 }
 
 type callParamSpec struct {
-	Names []string
+	Names    []string
+	Required int
 }
 
 func (s callParamSpec) indexOf(name string) int {
@@ -201,10 +202,10 @@ func (s callParamSpec) indexOf(name string) int {
 }
 
 var builtinCallParamSpecs = map[string]callParamSpec{
-	"alert":        {Names: []string{"message", "freq"}},
+	"alert":        {Names: []string{"message", "freq"}, Required: 1},
 	"barcolor":     {Names: []string{"color", "offset", "editable", "show_last", "title", "display"}},
-	"box.new":      {Names: []string{"left", "top", "right", "bottom", "border_color", "border_width", "border_style", "extend", "xloc", "bgcolor", "text", "text_size", "text_color", "text_halign", "text_valign", "text_wrap", "force_overlay"}},
-	"color.new":    {Names: []string{"color", "transp"}},
+	"box.new":      {Names: []string{"left", "top", "right", "bottom", "border_color", "border_width", "border_style", "extend", "xloc", "bgcolor", "text", "text_size", "text_color", "text_halign", "text_valign", "text_wrap", "force_overlay"}, Required: 4},
+	"color.new":    {Names: []string{"color", "transp"}, Required: 1},
 	"indicator":    {Names: []string{"title", "shorttitle", "overlay", "format", "precision", "scale", "max_bars_back", "timeframe", "timeframe_gaps", "explicit_plot_zorder", "max_lines_count", "max_labels_count", "max_boxes_count", "max_polylines_count", "dynamic_requests", "behind_chart"}},
 	"input":        {Names: []string{"defval", "title", "tooltip", "inline", "group", "display"}},
 	"input.bool":   {Names: []string{"defval", "title", "tooltip", "inline", "group", "display"}},
@@ -214,7 +215,7 @@ var builtinCallParamSpecs = map[string]callParamSpec{
 	"input.source": {Names: []string{"defval", "title", "tooltip", "inline", "group", "display"}},
 	"input.string": {Names: []string{"defval", "title", "tooltip", "inline", "group", "display", "options", "confirm"}},
 	"table.cell":   {Names: []string{"table_id", "column", "row", "text", "width", "height", "text_color", "text_halign", "text_valign", "text_size", "bgcolor", "tooltip", "text_font_family"}},
-	"table.new":    {Names: []string{"position", "columns", "rows", "bgcolor", "frame_color", "frame_width", "border_color", "border_width"}},
+	"table.new":    {Names: []string{"position", "columns", "rows", "bgcolor", "frame_color", "frame_width", "border_color", "border_width"}, Required: 3},
 }
 
 func (r *Runtime) Release() {
@@ -1595,7 +1596,13 @@ func bindNamedCallArgs(name string, argExprs []*Expr, spec callParamSpec) ([]*Ex
 	if highestAssigned < 0 {
 		return nil, nil
 	}
-	return bound[:highestAssigned+1], nil
+	bound = bound[:highestAssigned+1]
+	for i := 0; i < spec.Required; i++ {
+		if i >= len(bound) || bound[i] == nil {
+			return nil, fmt.Errorf("missing required argument %q for %s", spec.Names[i], name)
+		}
+	}
+	return bound, nil
 }
 
 func (r *Runtime) callParamSpec(name string) (callParamSpec, bool) {
