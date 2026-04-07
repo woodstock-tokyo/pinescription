@@ -134,6 +134,95 @@ func compileExec(t *testing.T, script string, values ...float64) interface{} {
 	return v
 }
 
+func TestNamedArgsScriptFunctionOutOfOrder(t *testing.T) {
+	v := compileExec(t, "foo(b = 2, a = 5)\nfoo(a, b) => a * 10 + b", 1, 2, 3)
+	got, ok := v.(float64)
+	if !ok {
+		t.Fatalf("expected float64 result, got %T (%v)", v, v)
+	}
+	if got != 52 {
+		t.Fatalf("expected 52, got %v", got)
+	}
+}
+
+func TestNamedArgsTypeConstructorUsesDefaultsForSparseArgs(t *testing.T) {
+	v := compileExec(t, "type Pair\n    float left = 3\n    float right = 7\np = Pair.new(right = 11)\np.left + p.right", 1, 2, 3)
+	got, ok := v.(float64)
+	if !ok {
+		t.Fatalf("expected float64 result, got %T (%v)", v, v)
+	}
+	if got != 14 {
+		t.Fatalf("expected 14, got %v", got)
+	}
+}
+
+func TestNamedArgsBuiltinBindingForInputsAndBox(t *testing.T) {
+	v := compileExec(t, "x = input.int(20, 'len', group = 'grp', minval = 1)\nb = box.new(1, 2, 3, 4, bgcolor = color.new(color.red, 25))\nx + box.get_bottom(b)", 1, 2, 3)
+	got, ok := v.(float64)
+	if !ok {
+		t.Fatalf("expected float64 result, got %T (%v)", v, v)
+	}
+	if got != 24 {
+		t.Fatalf("expected 24, got %v", got)
+	}
+}
+
+func TestNamedArgsInputDefaultWhenDefvalOmitted(t *testing.T) {
+	v := compileExec(t, "input.int(title = 'x', minval = 1)", 1, 2, 3)
+	got, ok := v.(float64)
+	if !ok {
+		t.Fatalf("expected float64 result, got %T (%v)", v, v)
+	}
+	if got != 0 {
+		t.Fatalf("expected default 0, got %v", got)
+	}
+}
+
+func TestNamedArgsBuiltinRejectsMissingRequiredPrefixParam(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 1, 2, 3))
+	e.SetDefaultSymbol("TEST")
+
+	for _, tc := range []struct {
+		script string
+		want   string
+	}{
+		{script: "color.new(transp = 25)", want: `missing required argument "color" for color.new`},
+		{script: "box.new(bottom = 4)", want: `missing required argument "left" for box.new`},
+	} {
+		b, err := e.Compile(tc.script)
+		if err != nil {
+			t.Fatalf("compile failed for %q: %v", tc.script, err)
+		}
+		_, err = e.Execute(b)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("expected runtime error containing %q for %q, got %v", tc.want, tc.script, err)
+		}
+	}
+}
+
+func TestNamedArgsBuiltinBindingForBarcolor(t *testing.T) {
+	v := compileExec(t, "barcolor(color.green, title = 'Volume Weighted Colored Bars', editable = false)\n1", 1, 2, 3)
+	got, ok := v.(float64)
+	if !ok {
+		t.Fatalf("expected float64 result, got %T (%v)", v, v)
+	}
+	if got != 1 {
+		t.Fatalf("expected 1, got %v", got)
+	}
+}
+
+func TestNamedArgsBuiltinBindingForIndicatorAndTableCell(t *testing.T) {
+	v := compileExec(t, "indicator('Named Args', 'NA', true, max_bars_back = 5000, max_boxes_count = 500)\nt = table.new(position.bottom_right, 1, 1)\ntable.cell(t, 0, 0, 'x', text_size = size.normal, text_color = color.teal, tooltip = 'ok')\n1", 1, 2, 3)
+	got, ok := v.(float64)
+	if !ok {
+		t.Fatalf("expected float64 result, got %T (%v)", v, v)
+	}
+	if got != 1 {
+		t.Fatalf("expected 1, got %v", got)
+	}
+}
+
 func TestArithmeticAndVariables(t *testing.T) {
 	script := `
 var x = 1
@@ -549,7 +638,6 @@ func TestRegisterUserFunction(t *testing.T) {
 func TestUnsupportedFeatures(t *testing.T) {
 	tests := []string{
 		"strategy.entry(\"L\", strategy.long)",
-		"alert(\"hello\")",
 		"plot(close)",
 	}
 	for _, script := range tests {
@@ -564,6 +652,35 @@ func TestUnsupportedFeatures(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "unsupported feature") {
 			t.Fatalf("expected unsupported feature error for %q, got %v", script, err)
 		}
+	}
+}
+
+func TestAlertSink(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 1, 2, 3))
+	e.SetDefaultSymbol("TEST")
+
+	var events []AlertEvent
+	e.SetAlertSink(func(ev AlertEvent) {
+		events = append(events, ev)
+	})
+
+	b, err := e.Compile("if bar_index == 0\n    alert(\"hello\")")
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	_, err = e.Execute(b)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 alert, got %d", len(events))
+	}
+	if events[0].Message != "hello" {
+		t.Fatalf("unexpected alert message: %q", events[0].Message)
+	}
+	if events[0].BarIndex != 0 {
+		t.Fatalf("unexpected alert bar index: %d", events[0].BarIndex)
 	}
 }
 
@@ -1150,8 +1267,8 @@ var z = array.size(array.clear(c))
 array.get(sl, 0) + p + s + inc + idx + z
 `
 	v := compileExec(t, script, 1, 2, 3)
-	if math.Abs(v.(float64)-11.0) > 0.000001 {
-		t.Fatalf("expected 11, got %v", v)
+	if math.Abs(v.(float64)-16.0) > 0.000001 {
+		t.Fatalf("expected 16, got %v", v)
 	}
 }
 
@@ -1192,6 +1309,34 @@ s + av + f + l + li + mx + mx2 + mn + mn2 + med + mode + rg + pl + pn + pnt + pr
 	v := compileExec(t, script, 1, 2, 3)
 	if math.Abs(v.(float64)-140.4333333333) > 0.000001 {
 		t.Fatalf("expected ~140.4333333333, got %v", v)
+	}
+}
+
+func TestArrayInsertMutatesPineArrayWithoutReassignment(t *testing.T) {
+	v := compileExec(t, `
+var a = array.new_int(0)
+a = array.push(a, 1)
+a = array.push(a, 3)
+array.insert(a, 1, 2)
+array.get(a, 1) * 10 + array.size(a)
+`, 1, 2, 3)
+	if math.Abs(v.(float64)-23.0) > 0.000001 {
+		t.Fatalf("expected 23, got %v", v)
+	}
+}
+
+func TestArrayDerivedArraysStayMutableWithoutReassignment(t *testing.T) {
+	v := compileExec(t, `
+var a = array.from(-1.0, -2.0)
+var b = array.copy(a)
+var c = array.abs(a)
+array.push(a, 3.0)
+array.push(b, 4.0)
+array.push(c, 5.0)
+array.size(a) + array.size(b) * 10 + array.size(c) * 100
+`, 1, 2, 3)
+	if math.Abs(v.(float64)-333.0) > 0.000001 {
+		t.Fatalf("expected 333, got %v", v)
 	}
 }
 

@@ -18,6 +18,7 @@ const (
 	exprKindBinary
 	exprKindTernary
 	exprKindCall
+	exprKindNamedArg
 	exprKindCiscClamp
 )
 
@@ -94,6 +95,8 @@ func exprKindOpcodeFromString(kind string) uint8 {
 		return exprKindTernary
 	case "call":
 		return exprKindCall
+	case "named_arg":
+		return exprKindNamedArg
 	case "cisc_clamp":
 		return exprKindCiscClamp
 	default:

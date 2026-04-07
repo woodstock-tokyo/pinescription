@@ -82,8 +82,9 @@ func releaseEnvMap(m map[string]interface{}) {
 }
 
 type flow struct {
-	kind  flowKind
-	value interface{}
+	kind     flowKind
+	value    interface{}
+	hasValue bool
 }
 
 type RuntimeSnapshot struct {
@@ -99,6 +100,8 @@ type RuntimeSnapshot struct {
 type Runtime struct {
 	program Program
 	userFns map[string]UserFunction
+
+	rootNamespaces map[string]interface{}
 
 	seriesByKey         map[string]SeriesExtended
 	namedSeries         map[string]SeriesExtended
@@ -121,6 +124,7 @@ type Runtime struct {
 	currentTime     time.Time
 	startTime       time.Time
 	logSink         func(level, message string, ts time.Time)
+	alertSink       func(AlertEvent)
 	barStep         time.Duration
 	lastTimeIndex   int
 	lastBarOpen     time.Time
@@ -183,12 +187,44 @@ type loopBinding struct {
 	value float64
 }
 
+type callParamSpec struct {
+	Names    []string
+	Required int
+}
+
+func (s callParamSpec) indexOf(name string) int {
+	for i, candidate := range s.Names {
+		if candidate == name {
+			return i
+		}
+	}
+	return -1
+}
+
+var builtinCallParamSpecs = map[string]callParamSpec{
+	"alert":        {Names: []string{"message", "freq"}, Required: 1},
+	"barcolor":     {Names: []string{"color", "offset", "editable", "show_last", "title", "display"}},
+	"box.new":      {Names: []string{"left", "top", "right", "bottom", "border_color", "border_width", "border_style", "extend", "xloc", "bgcolor", "text", "text_size", "text_color", "text_halign", "text_valign", "text_wrap", "force_overlay"}, Required: 4},
+	"color.new":    {Names: []string{"color", "transp"}, Required: 1},
+	"indicator":    {Names: []string{"title", "shorttitle", "overlay", "format", "precision", "scale", "max_bars_back", "timeframe", "timeframe_gaps", "explicit_plot_zorder", "max_lines_count", "max_labels_count", "max_boxes_count", "max_polylines_count", "dynamic_requests", "behind_chart"}},
+	"input":        {Names: []string{"defval", "title", "tooltip", "inline", "group", "display"}},
+	"input.bool":   {Names: []string{"defval", "title", "tooltip", "inline", "group", "display"}},
+	"input.color":  {Names: []string{"defval", "title", "tooltip", "inline", "group", "display"}},
+	"input.float":  {Names: []string{"defval", "title", "tooltip", "inline", "group", "display", "step", "minval", "maxval", "confirm"}},
+	"input.int":    {Names: []string{"defval", "title", "tooltip", "inline", "group", "display", "step", "minval", "maxval", "confirm"}},
+	"input.source": {Names: []string{"defval", "title", "tooltip", "inline", "group", "display"}},
+	"input.string": {Names: []string{"defval", "title", "tooltip", "inline", "group", "display", "options", "confirm"}},
+	"table.cell":   {Names: []string{"table_id", "column", "row", "text", "width", "height", "text_color", "text_halign", "text_valign", "text_size", "bgcolor", "tooltip", "text_font_family"}},
+	"table.new":    {Names: []string{"position", "columns", "rows", "bgcolor", "frame_color", "frame_width", "border_color", "border_width"}, Required: 3},
+}
+
 func (r *Runtime) Release() {
 	if r == nil {
 		return
 	}
 	r.program = Program{}
 	r.userFns = nil
+	r.rootNamespaces = nil
 	r.seriesByKey = nil
 	r.namedSeries = nil
 	r.seriesExprByName = nil
@@ -209,6 +245,7 @@ func (r *Runtime) Release() {
 	r.currentTime = time.Time{}
 	r.startTime = time.Time{}
 	r.logSink = nil
+	r.alertSink = nil
 	r.barStep = 0
 	r.lastTimeIndex = -1
 	r.lastBarOpen = time.Time{}
@@ -252,6 +289,7 @@ func newRuntime(
 	expectedBars int,
 	loadSeries func(symbol, valueType string) (SeriesExtended, error),
 	logSink func(level, message string, ts time.Time),
+	alertSink func(AlertEvent),
 ) *Runtime {
 	if seriesByKey == nil {
 		seriesByKey = map[string]SeriesExtended{}
@@ -277,6 +315,7 @@ func newRuntime(
 		currentTime:         currentTime,
 		startTime:           startTime,
 		logSink:             logSink,
+		alertSink:           alertSink,
 		lastTimeIndex:       -1,
 		expectedBars:        expectedBars,
 		lastValue:           math.NaN(),
@@ -299,7 +338,113 @@ func newRuntime(
 		loopBindings:        nil,
 	}
 	r.initTimeframeCache()
+	r.initRootEnv()
 	return r
+}
+
+func (r *Runtime) initRootEnv() {
+	if r == nil || len(r.envStack) == 0 {
+		return
+	}
+	root := r.envStack[0]
+	root["na"] = nil
+	root["last_bar_index"] = float64(r.expectedBars - 1)
+	barstate := map[string]interface{}{"islast": false}
+	syminfo := map[string]interface{}{"ticker": r.activeSymbol}
+	alertNs := map[string]interface{}{
+		"freq_all":                "all",
+		"freq_once_per_bar":       "once_per_bar",
+		"freq_once_per_bar_close": "once_per_bar_close",
+	}
+	displayNs := map[string]interface{}{"none": float64(0), "all": float64(1), "status_line": float64(0)}
+	positionNs := map[string]interface{}{"top_right": float64(0), "bottom_right": float64(1), "top_left": float64(2), "bottom_left": float64(3)}
+	xlocNs := map[string]interface{}{"bar_index": float64(0), "bar_time": float64(1)}
+	ylocNs := map[string]interface{}{"price": float64(0), "abovebar": float64(1), "belowbar": float64(2)}
+	extendNs := map[string]interface{}{"none": float64(0), "right": float64(1), "left": float64(2), "both": float64(3)}
+	sizeNs := map[string]interface{}{"tiny": float64(0), "small": float64(1), "normal": float64(2), "large": float64(3), "huge": float64(4), "auto": float64(5)}
+	textNs := map[string]interface{}{"align_left": float64(0), "align_center": float64(1), "align_right": float64(2)}
+	formatNs := map[string]interface{}{"volume": "volume", "price": "price", "percent": "percent"}
+	colorNs := map[string]interface{}{
+		"white":       "#ffffff",
+		"black":       "#000000",
+		"gray":        "#808080",
+		"silver":      "#c0c0c0",
+		"red":         "#ff0000",
+		"green":       "#00ff00",
+		"blue":        "#0000ff",
+		"yellow":      "#ffff00",
+		"orange":      "#ffa500",
+		"transparent": "#00000000",
+	}
+	lineNs := map[string]interface{}{"style_solid": float64(0), "style_dashed": float64(1), "style_dotted": float64(2)}
+	labelNs := map[string]interface{}{"style_label_left": float64(0), "style_label_right": float64(1), "style_label_up": float64(2), "style_label_down": float64(3)}
+
+	root["barstate"] = barstate
+	root["syminfo"] = syminfo
+	root["alert"] = alertNs
+	root["display"] = displayNs
+	root["position"] = positionNs
+	root["xloc"] = xlocNs
+	root["yloc"] = ylocNs
+	root["extend"] = extendNs
+	root["size"] = sizeNs
+	root["text"] = textNs
+	root["format"] = formatNs
+	root["color"] = colorNs
+	root["line"] = lineNs
+	root["label"] = labelNs
+
+	r.rootNamespaces = map[string]interface{}{
+		"barstate": barstate,
+		"syminfo":  syminfo,
+		"alert":    alertNs,
+		"display":  displayNs,
+		"position": positionNs,
+		"xloc":     xlocNs,
+		"yloc":     ylocNs,
+		"extend":   extendNs,
+		"size":     sizeNs,
+		"text":     textNs,
+		"format":   formatNs,
+		"color":    colorNs,
+		"line":     lineNs,
+		"label":    labelNs,
+	}
+}
+
+func (r *Runtime) SetBarIndex(i int) {
+	r.barIndex = i
+	if len(r.envStack) == 0 {
+		return
+	}
+	root := r.envStack[0]
+	root["last_bar_index"] = float64(r.expectedBars - 1)
+	isLast := i == r.expectedBars-1
+	if r.rootNamespaces != nil {
+		if bs, ok := r.rootNamespaces["barstate"].(map[string]interface{}); ok {
+			bs["islast"] = isLast
+		}
+	}
+	if bs, ok := root["barstate"].(map[string]interface{}); ok {
+		bs["islast"] = isLast
+	}
+}
+
+func (r *Runtime) emitAlert(message, frequency string) {
+	if r == nil || r.alertSink == nil {
+		return
+	}
+	idx := r.effectiveBarIndex()
+	if idx < 0 {
+		idx = 0
+	}
+	r.alertSink(AlertEvent{
+		Message:   message,
+		Frequency: frequency,
+		BarIndex:  idx,
+		Time:      r.barCloseTime().UTC(),
+		Symbol:    r.activeSymbol,
+	})
 }
 
 func (r *Runtime) initTimeframeCache() {
@@ -607,6 +752,8 @@ func (r *Runtime) commitBar() error {
 }
 
 func (r *Runtime) execStmtList(stmts []Stmt) (flow, error) {
+	var last interface{}
+	hasLast := false
 	for _, stmt := range stmts {
 		fl, err := r.execStmt(stmt)
 		if err != nil {
@@ -615,8 +762,12 @@ func (r *Runtime) execStmtList(stmts []Stmt) (flow, error) {
 		if fl.kind != flowNone {
 			return fl, nil
 		}
+		if fl.hasValue {
+			last = fl.value
+			hasLast = true
+		}
 	}
-	return flow{kind: flowNone}, nil
+	return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 }
 
 func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
@@ -664,9 +815,18 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 		if err != nil {
 			return flow{}, err
 		}
-		items, ok := rhs.([]interface{})
-		if !ok {
-			return flow{}, fmt.Errorf("tuple assignment requires tuple/array RHS")
+		var items []interface{}
+		if rhs == nil {
+			items = nil
+		} else {
+			switch v := rhs.(type) {
+			case []interface{}:
+				items = v
+			case *pineArray:
+				items = v.items
+			default:
+				return flow{}, fmt.Errorf("tuple assignment requires tuple/array RHS")
+			}
 		}
 		for i, name := range stmt.TupleNames {
 			if name == "_" {
@@ -689,7 +849,7 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 		if n, ok := toFloat(v); ok {
 			r.lastValue = n
 		}
-		return flow{kind: flowNone}, nil
+		return flow{kind: flowNone, value: v, hasValue: true}, nil
 	case "if":
 		c, err := r.eval(stmt.Cond)
 		if err != nil {
@@ -703,6 +863,8 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 	case "switch":
 		return r.execSwitch(stmt)
 	case "while":
+		var last interface{}
+		hasLast := false
 		for {
 			c, err := r.eval(stmt.Cond)
 			if err != nil {
@@ -717,15 +879,19 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 			}
 			switch fl.kind {
 			case flowNone:
+				if fl.hasValue {
+					last = fl.value
+					hasLast = true
+				}
 			case flowBreak:
-				return flow{kind: flowNone}, nil
+				return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 			case flowContinue:
 				continue
 			default:
 				return fl, nil
 			}
 		}
-		return flow{kind: flowNone}, nil
+		return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 	case "for":
 		fromV, err := r.eval(stmt.From)
 		if err != nil {
@@ -749,6 +915,8 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 			return flow{}, errors.New("for step cannot be 0")
 		}
 		if disableLoopIteratorFastPath {
+			var last interface{}
+			hasLast := false
 			cmp := func(i float64) bool {
 				if step > 0 {
 					return i <= to
@@ -763,15 +931,19 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 				}
 				switch fl.kind {
 				case flowNone:
+					if fl.hasValue {
+						last = fl.value
+						hasLast = true
+					}
 				case flowBreak:
-					return flow{kind: flowNone}, nil
+					return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 				case flowContinue:
 					continue
 				default:
 					return fl, nil
 				}
 			}
-			return flow{kind: flowNone}, nil
+			return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 		}
 
 		if r.consts[stmt.ForVar] {
@@ -791,6 +963,8 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 			r.loopBindings = r.loopBindings[:len(r.loopBindings)-1]
 		}()
 
+		var last interface{}
+		hasLast := false
 		cmp := func(i float64) bool {
 			if step > 0 {
 				return i <= to
@@ -805,15 +979,19 @@ func (r *Runtime) execStmt(stmt Stmt) (flow, error) {
 			}
 			switch fl.kind {
 			case flowNone:
+				if fl.hasValue {
+					last = fl.value
+					hasLast = true
+				}
 			case flowBreak:
-				return flow{kind: flowNone}, nil
+				return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 			case flowContinue:
 				continue
 			default:
 				return fl, nil
 			}
 		}
-		return flow{kind: flowNone}, nil
+		return flow{kind: flowNone, value: last, hasValue: hasLast}, nil
 	case "break":
 		return flow{kind: flowBreak}, nil
 	case "continue":
@@ -1028,10 +1206,7 @@ func (r *Runtime) execSwitch(stmt Stmt) (flow, error) {
 		if err != nil {
 			return flow{}, err
 		}
-		if fl.kind != flowNone {
-			return fl, nil
-		}
-		break
+		return fl, nil
 	}
 
 	if !matched && len(stmt.Default) > 0 {
@@ -1202,6 +1377,8 @@ func (r *Runtime) eval(expr *Expr) (interface{}, error) {
 		return r.eval(expr.Else)
 	case exprKindCall:
 		return r.evalCall(expr)
+	case exprKindNamedArg:
+		return nil, fmt.Errorf("named argument %q cannot be evaluated outside call binding", expr.Name)
 	case exprKindCiscClamp:
 		if len(expr.Args) != 3 {
 			return nil, fmt.Errorf("invalid cisc_clamp args")
@@ -1238,7 +1415,7 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 		return nil, errors.New("call target must be identifier")
 	}
 	name := expr.Left.Name
-	if strings.HasPrefix(name, "strategy.") || strings.HasPrefix(name, "alert") || strings.HasPrefix(name, "plot") {
+	if strings.HasPrefix(name, "strategy.") || strings.HasPrefix(name, "plot") {
 		return nil, fmt.Errorf("unsupported feature: %s", name)
 	}
 
@@ -1246,59 +1423,37 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 	if len(expr.Args) <= 4 {
 		useArgPool = false
 	}
-	var args []interface{}
-	var smallArgs [4]interface{}
-	if useArgPool {
-		args = acquireInterfaceSlice(len(expr.Args))
-	} else if len(expr.Args) <= len(smallArgs) {
-		args = smallArgs[:0]
-	} else {
-		args = make([]interface{}, 0, len(expr.Args))
+	rawArgs, args, releaseArgs, err := r.prepareCallArgs(name, expr.Args, useArgPool)
+	if err != nil {
+		return nil, err
 	}
-	releaseArgs := func() {
-		if useArgPool {
-			releaseInterfaceSlice(args)
-		}
-	}
-	for _, argExpr := range expr.Args {
-		v, err := r.eval(argExpr)
-		if err != nil {
-			releaseArgs()
-			return nil, err
-		}
-		args = append(args, v)
-	}
+	defer releaseArgs()
+
 	if expr.BID != builtinFastUnknown {
-		if v, ok, err := r.callBuiltinFast(expr.BID, expr.Args, args); ok || err != nil {
-			releaseArgs()
+		if v, ok, err := r.callBuiltinFast(expr.BID, rawArgs, args); ok || err != nil {
 			return v, err
 		}
 	}
 
-	if v, ok, err := r.callBuiltin(name, expr.Args, args); ok || err != nil {
-		releaseArgs()
+	if v, ok, err := r.callBuiltin(name, rawArgs, args); ok || err != nil {
 		return v, err
 	}
 	if typeName, ok := splitTypeConstructorCallName(name); ok {
 		if typeDef, exists := r.program.Types[typeName]; exists {
-			instance, err := r.instantiateType(typeDef, args)
-			releaseArgs()
+			instance, err := r.instantiateType(typeDef, rawArgs, args)
 			return instance, err
 		}
 	}
 	if fn, ok := r.program.Functions[name]; ok {
 		result, err := r.callScriptFunction(fn, args)
-		releaseArgs()
 		return result, err
 	}
 	if userFn, ok := r.userFns[name]; ok {
 		if useArgPool {
 			copied := append([]interface{}(nil), args...)
-			releaseArgs()
 			return userFn(copied...)
 		}
 		result, err := userFn(args...)
-		releaseArgs()
 		return result, err
 	}
 	if recvName, methodName, ok := splitMethodCallName(name); ok {
@@ -1315,24 +1470,156 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 			methodArgs = append(methodArgs, args...)
 			if builtinName := methodBuiltinNameForReceiver(recv, methodName); builtinName != "" {
 				if v, ok, err := r.callBuiltin(builtinName, nil, methodArgs); ok || err != nil {
-					releaseArgs()
 					return v, err
 				}
 			}
 			if fn, ok := r.program.Functions[methodName]; ok {
 				result, err := r.callScriptFunction(fn, methodArgs)
-				releaseArgs()
 				return result, err
 			}
 			if userFn, ok := r.userFns[methodName]; ok {
 				result, err := userFn(methodArgs...)
-				releaseArgs()
 				return result, err
 			}
 		}
 	}
-	releaseArgs()
 	return nil, fmt.Errorf("unknown function: %s", name)
+}
+
+func (r *Runtime) prepareCallArgs(name string, argExprs []*Expr, useArgPool bool) ([]*Expr, []interface{}, func(), error) {
+	if !callHasNamedArgs(argExprs) {
+		var args []interface{}
+		var smallArgs [4]interface{}
+		if useArgPool {
+			args = acquireInterfaceSlice(len(argExprs))
+		} else if len(argExprs) <= len(smallArgs) {
+			args = smallArgs[:0]
+		} else {
+			args = make([]interface{}, 0, len(argExprs))
+		}
+		release := func() {
+			if useArgPool {
+				releaseInterfaceSlice(args)
+			}
+		}
+		for _, argExpr := range argExprs {
+			v, err := r.eval(argExpr)
+			if err != nil {
+				release()
+				return nil, nil, nil, err
+			}
+			args = append(args, v)
+		}
+		return argExprs, args, release, nil
+	}
+
+	spec, ok := r.callParamSpec(name)
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("named arguments are not supported for %s", name)
+	}
+	boundRaw, err := bindNamedCallArgs(name, argExprs, spec)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var args []interface{}
+	var smallArgs [4]interface{}
+	if useArgPool {
+		args = acquireInterfaceSlice(len(boundRaw))
+	} else if len(boundRaw) <= len(smallArgs) {
+		args = smallArgs[:0]
+	} else {
+		args = make([]interface{}, 0, len(boundRaw))
+	}
+	release := func() {
+		if useArgPool {
+			releaseInterfaceSlice(args)
+		}
+	}
+	for _, rawArg := range boundRaw {
+		if rawArg == nil {
+			args = append(args, nil)
+			continue
+		}
+		v, err := r.eval(rawArg)
+		if err != nil {
+			release()
+			return nil, nil, nil, err
+		}
+		args = append(args, v)
+	}
+	return boundRaw, args, release, nil
+}
+
+func callHasNamedArgs(argExprs []*Expr) bool {
+	for _, arg := range argExprs {
+		if arg != nil && arg.Kind == "named_arg" {
+			return true
+		}
+	}
+	return false
+}
+
+func bindNamedCallArgs(name string, argExprs []*Expr, spec callParamSpec) ([]*Expr, error) {
+	assigned := make([]bool, len(spec.Names))
+	bound := make([]*Expr, len(spec.Names))
+	nextPositional := 0
+	highestAssigned := -1
+	for _, arg := range argExprs {
+		if arg != nil && arg.Kind == "named_arg" {
+			idx := spec.indexOf(arg.Name)
+			if idx < 0 {
+				return nil, fmt.Errorf("unknown named argument %q for %s", arg.Name, name)
+			}
+			if assigned[idx] {
+				return nil, fmt.Errorf("duplicate argument %q for %s", arg.Name, name)
+			}
+			bound[idx] = arg.NamedArgValue()
+			assigned[idx] = true
+			if idx > highestAssigned {
+				highestAssigned = idx
+			}
+			continue
+		}
+		for nextPositional < len(spec.Names) && assigned[nextPositional] {
+			nextPositional++
+		}
+		if nextPositional >= len(spec.Names) {
+			return nil, fmt.Errorf("too many arguments for %s", name)
+		}
+		bound[nextPositional] = arg
+		assigned[nextPositional] = true
+		if nextPositional > highestAssigned {
+			highestAssigned = nextPositional
+		}
+		nextPositional++
+	}
+	if highestAssigned < 0 {
+		return nil, nil
+	}
+	bound = bound[:highestAssigned+1]
+	for i := 0; i < spec.Required; i++ {
+		if i >= len(bound) || bound[i] == nil {
+			return nil, fmt.Errorf("missing required argument %q for %s", spec.Names[i], name)
+		}
+	}
+	return bound, nil
+}
+
+func (r *Runtime) callParamSpec(name string) (callParamSpec, bool) {
+	if fn, ok := r.program.Functions[name]; ok {
+		return callParamSpec{Names: append([]string(nil), fn.Params...)}, true
+	}
+	if typeName, ok := splitTypeConstructorCallName(name); ok {
+		if typeDef, exists := r.program.Types[typeName]; exists {
+			names := make([]string, 0, len(typeDef.Fields))
+			for _, field := range typeDef.Fields {
+				names = append(names, field.Name)
+			}
+			return callParamSpec{Names: names}, true
+		}
+	}
+	spec, ok := builtinCallParamSpecs[name]
+	return spec, ok
 }
 
 func splitMethodCallName(name string) (string, string, bool) {
@@ -1376,13 +1663,13 @@ func methodBuiltinNameForReceiver(receiver interface{}, method string) string {
 	}
 }
 
-func (r *Runtime) instantiateType(typeDef TypeDef, args []interface{}) (interface{}, error) {
+func (r *Runtime) instantiateType(typeDef TypeDef, rawArgs []*Expr, args []interface{}) (interface{}, error) {
 	if len(args) > len(typeDef.Fields) {
 		return nil, fmt.Errorf("%s.new expects at most %d args", typeDef.Name, len(typeDef.Fields))
 	}
 	instance := &customTypeInstance{TypeName: typeDef.Name, Fields: map[string]interface{}{}}
 	for i, field := range typeDef.Fields {
-		if i < len(args) {
+		if i < len(rawArgs) && rawArgs[i] != nil {
 			instance.Fields[field.Name] = args[i]
 			continue
 		}
@@ -1425,6 +1712,8 @@ func (r *Runtime) callScriptFunction(fn FunctionDef, args []interface{}) (interf
 	if fn.Expr != nil {
 		return r.eval(fn.Expr)
 	}
+	var last interface{}
+	hasLast := false
 	for _, stmt := range fn.Body {
 		fl, err := r.execStmt(stmt)
 		if err != nil {
@@ -1433,6 +1722,13 @@ func (r *Runtime) callScriptFunction(fn FunctionDef, args []interface{}) (interf
 		if fl.kind == flowReturn {
 			return fl.value, nil
 		}
+		if fl.kind == flowNone && fl.hasValue {
+			last = fl.value
+			hasLast = true
+		}
+	}
+	if hasLast {
+		return last, nil
 	}
 	return nil, nil
 }
@@ -1791,9 +2087,16 @@ func (r *Runtime) resolveDottedIdentifier(name string) (interface{}, bool, error
 	if len(parts) < 2 {
 		return nil, false, nil
 	}
-	cur, ok := r.lookupEnvValue(parts[0])
+	base := parts[0]
+	cur, ok := interface{}(nil), false
+	if r.rootNamespaces != nil {
+		cur, ok = r.rootNamespaces[base]
+	}
 	if !ok {
-		return nil, false, nil
+		cur, ok = r.lookupEnvValue(base)
+		if !ok {
+			return nil, false, nil
+		}
 	}
 	for i := 1; i < len(parts); i++ {
 		next, handled, err := objectFieldGet(cur, parts[i])

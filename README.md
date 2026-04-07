@@ -19,14 +19,33 @@ It compiles script text into bytecode (`[]byte`) and executes that bytecode agai
 
 ## API
 
+There is a package-level default engine for quick usage, and the `Engine` type for isolated instances.
+
+Package-level (default engine):
+
 - `Compile(pinescript string) ([]byte, error)`
 - `Execute(bytecode []byte) (interface{}, error)`
-- `ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, error)`
 - `RegisterFunction(name string, function func(args ...interface{}) (interface{}, error))`
 - `RegisterMarketDataProvider(provider Provider)`
-- `SetDefaultValueType(valueType string)`
-- `ClearRuntime()` to release retained runtime state in engine
-- `NewEngine()` for isolated runtime instances
+- `SetTimeframe(timeframe string)`
+- `SetSession(session string)`
+- `SetCurrentTime(now time.Time)`
+- `SetStartTime(start time.Time)`
+
+Engine type (recommended):
+
+- `NewEngine() *Engine`
+- `(*Engine).Compile(pinescript string) ([]byte, error)`
+- `(*Engine).Execute(bytecode []byte) (interface{}, error)`
+- `(*Engine).ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, error)`
+- `(*Engine).RegisterFunction(name string, function func(args ...interface{}) (interface{}, error))`
+- `(*Engine).RegisterMarketDataProvider(provider Provider)`
+- `(*Engine).SetDefaultSymbol(symbol string)`
+- `(*Engine).SetDefaultValueType(valueType string)`
+- `(*Engine).SetTimeframe(timeframe string)`
+- `(*Engine).SetSession(session string)`
+- `(*Engine).SetAlertSink(func(AlertEvent))`
+- `(*Engine).ClearRuntime()` to release retained runtime state in the engine
 
 ## Provider Resolution
 
@@ -38,7 +57,7 @@ It compiles script text into bytecode (`[]byte`) and executes that bytecode agai
 
 ## Runtime State Holder API
 
-- `ExecuteWithRuntime(bytecode)` returns `(*Runtime, value, error)` for direct runtime inspection after execution.
+- `(*Engine).ExecuteWithRuntime(bytecode)` returns `(*Runtime, value, error)` for direct runtime inspection after execution.
 - `Engine.Runtime()` returns the latest runtime instance (or `nil` if nothing has been executed yet).
 - `Engine.ClearRuntime()` releases and clears the retained runtime.
 - `Runtime.Release()` clears retained references/maps in that runtime instance.
@@ -48,6 +67,18 @@ It compiles script text into bytecode (`[]byte`) and executes that bytecode agai
 - `Runtime.ValueTypes(symbol string) []string` returns known value types for a symbol in sorted order.
 - `Runtime.Series(seriesKey string) (SeriesExtended, bool)` returns a series and `true` when available/loadable.
 - `Runtime.Value(name string) (interface{}, bool)` returns the latest value for a variable (scope/history), plus found flag.
+
+## Alerts
+
+`alert()` and `alertcondition()` emit events to an engine callback (there is no TradingView-style delivery). Use `(*Engine).SetAlertSink(func(AlertEvent))`.
+
+The callback receives:
+
+- `Message` (string)
+- `Frequency` (string, optional)
+- `BarIndex` (int)
+- `Time` (UTC time)
+- `Symbol` (string)
 
 ## Provider Interface
 
@@ -87,22 +118,35 @@ Time/session notes:
 - Matrix built-ins: creation/copy/access (`matrix.new_*`, `matrix.copy`, `matrix.get`, `matrix.set`, `matrix.row`, `matrix.col`), shape/mutation (`matrix.rows`, `matrix.columns`, `matrix.elements_count`, `matrix.reshape`, `matrix.submatrix`, `matrix.add_row`, `matrix.add_col`, `matrix.remove_row`, `matrix.remove_col`, `matrix.swap_rows`, `matrix.swap_columns`, `matrix.reverse`, `matrix.sort`, `matrix.fill` with full-matrix and range overloads), statistics (`matrix.sum`, `matrix.avg`, `matrix.min`, `matrix.max`, `matrix.median`, `matrix.mode`), operations (`matrix.concat`, `matrix.diff`, `matrix.mult`, `matrix.kron`, `matrix.pow`), linear algebra (`matrix.det`, `matrix.rank`, `matrix.trace`, `matrix.transpose`, `matrix.inv`, `matrix.pinv`, `matrix.eigenvalues`, `matrix.eigenvectors` for square matrices), properties (`matrix.is_square`, `matrix.is_symmetric`, `matrix.is_diagonal`, `matrix.is_identity`, `matrix.is_zero`, `matrix.is_triangular`, `matrix.is_binary`, `matrix.is_antidiagonal`, `matrix.is_antisymmetric`, `matrix.is_stochastic`)
 - String helpers: `str.tostring`, `str.length`, `str.upper`, `str.lower`, `str.contains`, `str.startswith`, `str.endswith`, `str.replace`, `str.substring`, `str.split`, `str.format`
 - Type helpers: `int`, `float`, `bool`, `string`
-- Built-in type placeholders: `color`, `line.new`, `label.new`
+- Mutable arrays created via `array.new_*` (passed by reference; supports side-effect usage like `array.push(arr, x)` without assignment)
+- No-render UI/drawing stubs (to allow script execution without rendering): `line.*`, `label.*`, `box.*`, `table.*`, `linefill.*`, `barcolor`
 
 ## Unsupported Features
 
 - Strategy APIs (`strategy.*`)
-- Alert APIs (`alert`, `alertcondition`)
 - Plot APIs (`plot*`)
 
 These return explicit runtime errors (`unsupported feature: ...`).
 
 ## Example
 
-See `examples/basic/main.go`.
+See:
+
+- `examples/basic/main.go`
+- `examples/volume_profile_pivot_anchored/` (runs a large Pine v6 script on deterministic dummy OHLCV data and captures alerts)
 
 Run:
 
 ```bash
 go run ./examples/basic
 ```
+
+Run the volume profile harness (Please check the comment in `examples/volume_profile_pivot_anchored/script.pine` for downloading the original script from TradingView):
+
+```bash
+go run ./examples/volume_profile_pivot_anchored
+```
+
+## Security
+
+See `SECURITY.md`.

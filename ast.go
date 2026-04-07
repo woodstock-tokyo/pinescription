@@ -86,3 +86,10 @@ type Expr struct {
 	Args  []*Expr `json:"args,omitempty"`
 	Elems []*Expr `json:"elems,omitempty"`
 }
+
+func (e *Expr) NamedArgValue() *Expr {
+	if e == nil || e.Kind != "named_arg" {
+		return nil
+	}
+	return e.Right
+}

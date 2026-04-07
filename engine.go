@@ -60,9 +60,18 @@ type Engine struct {
 	startTime        time.Time
 	lastRuntime      *Runtime
 	logs             []EngineLogEntry
+	alertSink        func(AlertEvent)
 	cachedBytecode   []byte
 	cachedProgram    Program
 	cacheValid       bool
+}
+
+type AlertEvent struct {
+	Message   string
+	Frequency string
+	BarIndex  int
+	Time      time.Time
+	Symbol    string
 }
 
 type providerCatalog struct {
@@ -158,6 +167,10 @@ func (e *Engine) ClearRuntime() {
 		e.lastRuntime.Release()
 	}
 	e.lastRuntime = nil
+}
+
+func (e *Engine) SetAlertSink(sink func(AlertEvent)) {
+	e.alertSink = sink
 }
 
 func (e *Engine) Symbols() ([]string, error) {
@@ -448,7 +461,7 @@ func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, err
 
 	seriesByKey := map[string]SeriesExtended{}
 	seriesByKey[makeSeriesKey(activeSymbol, activeValueType)] = baseSeries
-	rt := newRuntime(program, functions, seriesByKey, catalog.valueTypesBySymbol, activeSymbol, activeValueType, timeframe, session, currentTime, startTime, baseSeries.Length(), catalog.fetchSeries, e.appendLog)
+	rt := newRuntime(program, functions, seriesByKey, catalog.valueTypesBySymbol, activeSymbol, activeValueType, timeframe, session, currentTime, startTime, baseSeries.Length(), catalog.fetchSeries, e.appendLog, e.alertSink)
 	for key := range neededKeys {
 		symbol, valueType, ok := splitSeriesKey(key)
 		if !ok {
@@ -462,7 +475,7 @@ func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, err
 	}
 
 	for i := 0; i < baseSeries.Length(); i++ {
-		rt.barIndex = i
+		rt.SetBarIndex(i)
 		if err := rt.execTopLevel(); err != nil {
 			return nil, nil, err
 		}

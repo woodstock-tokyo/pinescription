@@ -281,6 +281,8 @@ func validateExprNoNumericToBool(expr *Expr, env *staticTypeEnv) (staticExprType
 			return whenTrueType, nil
 		}
 		return staticTypeUnknown, nil
+	case "named_arg":
+		return validateExprNoNumericToBool(expr.NamedArgValue(), env)
 	case "call":
 		if _, err := validateExprNoNumericToBool(expr.Left, env); err != nil {
 			return staticTypeUnknown, err

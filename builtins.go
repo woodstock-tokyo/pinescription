@@ -76,6 +76,10 @@ type pineMap struct {
 	data map[interface{}]interface{}
 }
 
+type pineArray struct {
+	items []interface{}
+}
+
 func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) (interface{}, bool, error) {
 	switch name {
 	case "int":
@@ -96,19 +100,192 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 		}
 		return truthy(args[0]), true, nil
 	case "string", "str.tostring":
-		if len(args) != 1 {
-			return nil, true, fmt.Errorf("string() expects 1 arg")
+		if len(args) < 1 || len(args) > 2 {
+			return nil, true, fmt.Errorf("%s() expects 1 or 2 args", name)
 		}
 		return toString(args[0]), true, nil
+	case "indicator":
+		return nil, true, nil
+	case "input", "input.int", "input.float", "input.bool", "input.string", "input.color", "input.time", "input.session", "input.symbol", "input.source":
+		if len(args) == 0 || args[0] == nil {
+			switch name {
+			case "input.bool":
+				return false, true, nil
+			case "input.string", "input.color", "input.session", "input.symbol":
+				return "", true, nil
+			default:
+				return float64(0), true, nil
+			}
+		}
+		return args[0], true, nil
+	case "alert":
+		if len(args) < 1 || len(args) > 2 {
+			return nil, true, fmt.Errorf("alert() expects 1 or 2 args")
+		}
+		msg := toString(args[0])
+		freq := ""
+		if len(args) == 2 {
+			freq = toString(args[1])
+		}
+		r.emitAlert(msg, freq)
+		return nil, true, nil
+	case "alertcondition":
+		if len(args) < 1 {
+			return nil, true, fmt.Errorf("alertcondition() expects at least 1 arg")
+		}
+		if truthy(args[0]) {
+			msg := ""
+			if len(args) >= 3 {
+				msg = toString(args[2])
+			} else if len(args) >= 2 {
+				msg = toString(args[1])
+			}
+			r.emitAlert(msg, "")
+		}
+		return nil, true, nil
 	case "color":
 		if len(args) < 3 {
 			return nil, true, fmt.Errorf("color() expects at least 3 args")
 		}
 		return map[string]interface{}{"r": args[0], "g": args[1], "b": args[2]}, true, nil
+	case "color.new":
+		if len(args) < 1 || len(args) > 2 {
+			return nil, true, fmt.Errorf("color.new() expects 1 or 2 args")
+		}
+		base := args[0]
+		transp := float64(0)
+		if len(args) == 2 {
+			transp, _ = toFloat(args[1])
+		}
+		return map[string]interface{}{"base": base, "transp": transp}, true, nil
+	case "color.rgb":
+		if len(args) != 3 {
+			return nil, true, fmt.Errorf("color.rgb() expects 3 args")
+		}
+		return map[string]interface{}{"r": args[0], "g": args[1], "b": args[2]}, true, nil
+	case "box.new":
+		if len(args) < 4 {
+			return nil, true, fmt.Errorf("box.new() expects at least 4 args")
+		}
+		left, _ := toFloat(args[0])
+		top, _ := toFloat(args[1])
+		right, _ := toFloat(args[2])
+		bottom, _ := toFloat(args[3])
+		return map[string]interface{}{"type": "box", "left": left, "top": top, "right": right, "bottom": bottom}, true, nil
+	case "box.get_bottom":
+		if len(args) != 1 {
+			return nil, true, fmt.Errorf("box.get_bottom() expects 1 arg")
+		}
+		bx, ok := args[0].(map[string]interface{})
+		if !ok {
+			return math.NaN(), true, nil
+		}
+		v, _ := toFloat(bx["bottom"])
+		return v, true, nil
+	case "box.get_top":
+		if len(args) != 1 {
+			return nil, true, fmt.Errorf("box.get_top() expects 1 arg")
+		}
+		bx, ok := args[0].(map[string]interface{})
+		if !ok {
+			return math.NaN(), true, nil
+		}
+		v, _ := toFloat(bx["top"])
+		return v, true, nil
+	case "box.set_right":
+		if len(args) != 2 {
+			return nil, true, fmt.Errorf("box.set_right() expects 2 args")
+		}
+		bx, ok := args[0].(map[string]interface{})
+		if !ok {
+			return nil, true, nil
+		}
+		right, _ := toFloat(args[1])
+		bx["right"] = right
+		return bx, true, nil
+	case "box.delete":
+		return nil, true, nil
+	case "table.new":
+		return map[string]interface{}{"type": "table", "args": args}, true, nil
+	case "table.cell":
+		return nil, true, nil
+	case "linefill.new":
+		return map[string]interface{}{"type": "linefill", "args": args}, true, nil
+	case "barcolor":
+		return nil, true, nil
 	case "line.new":
 		return map[string]interface{}{"type": "line", "args": args}, true, nil
 	case "label.new":
 		return map[string]interface{}{"type": "label", "args": args}, true, nil
+	case "line.set_xy1":
+		if len(args) != 3 {
+			return nil, true, fmt.Errorf("line.set_xy1() expects 3 args")
+		}
+		ln, ok := args[0].(map[string]interface{})
+		if !ok {
+			return nil, true, nil
+		}
+		x1, _ := toFloat(args[1])
+		y1, _ := toFloat(args[2])
+		ln["x1"] = x1
+		ln["y1"] = y1
+		return ln, true, nil
+	case "line.set_xy2":
+		if len(args) != 3 {
+			return nil, true, fmt.Errorf("line.set_xy2() expects 3 args")
+		}
+		ln, ok := args[0].(map[string]interface{})
+		if !ok {
+			return nil, true, nil
+		}
+		x2, _ := toFloat(args[1])
+		y2, _ := toFloat(args[2])
+		ln["x2"] = x2
+		ln["y2"] = y2
+		return ln, true, nil
+	case "line.set_color":
+		if len(args) != 2 {
+			return nil, true, fmt.Errorf("line.set_color() expects 2 args")
+		}
+		ln, ok := args[0].(map[string]interface{})
+		if !ok {
+			return nil, true, nil
+		}
+		ln["color"] = args[1]
+		return ln, true, nil
+	case "label.set_xy":
+		if len(args) != 3 {
+			return nil, true, fmt.Errorf("label.set_xy() expects 3 args")
+		}
+		lb, ok := args[0].(map[string]interface{})
+		if !ok {
+			return nil, true, nil
+		}
+		x, _ := toFloat(args[1])
+		y, _ := toFloat(args[2])
+		lb["x"] = x
+		lb["y"] = y
+		return lb, true, nil
+	case "label.set_text":
+		if len(args) != 2 {
+			return nil, true, fmt.Errorf("label.set_text() expects 2 args")
+		}
+		lb, ok := args[0].(map[string]interface{})
+		if !ok {
+			return nil, true, nil
+		}
+		lb["text"] = toString(args[1])
+		return lb, true, nil
+	case "label.set_tooltip":
+		if len(args) != 2 {
+			return nil, true, fmt.Errorf("label.set_tooltip() expects 2 args")
+		}
+		lb, ok := args[0].(map[string]interface{})
+		if !ok {
+			return nil, true, nil
+		}
+		lb["tooltip"] = toString(args[1])
+		return lb, true, nil
 	case "log.info":
 		return r.builtinLog("info", args)
 	case "log.warning":
@@ -238,7 +415,7 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 			out = append(out, pm.data[k])
 		}
 		return out, true, nil
-	case "array.new_int", "array.new_float", "array.new_bool", "array.new_string":
+	case "array.new_int", "array.new_float", "array.new_bool", "array.new_string", "array.new_box":
 		sz := 0
 		if len(args) > 0 {
 			f, _ := toFloat(args[0])
@@ -252,23 +429,23 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 		for i := range out {
 			out[i] = init
 		}
-		return out, true, nil
+		return &pineArray{items: out}, true, nil
 	case "array.size":
 		if len(args) != 1 {
 			return nil, true, fmt.Errorf("array.size expects 1 arg")
 		}
-		arr, ok := args[0].([]interface{})
-		if !ok {
-			return nil, true, fmt.Errorf("array.size requires array")
+		arr, err := asArrayArg(args[0], "array.size")
+		if err != nil {
+			return nil, true, err
 		}
 		return len(arr), true, nil
 	case "array.get":
 		if len(args) != 2 {
 			return nil, true, fmt.Errorf("array.get expects 2 args")
 		}
-		arr, ok := args[0].([]interface{})
-		if !ok {
-			return nil, true, fmt.Errorf("array.get requires array")
+		arr, err := asArrayArg(args[0], "array.get")
+		if err != nil {
+			return nil, true, err
 		}
 		idxF, _ := toFloat(args[1])
 		idx := int(idxF)
@@ -280,91 +457,152 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 		if len(args) != 3 {
 			return nil, true, fmt.Errorf("array.set expects 3 args")
 		}
-		arr, ok := args[0].([]interface{})
-		if !ok {
-			return nil, true, fmt.Errorf("array.set requires array")
-		}
 		idxF, _ := toFloat(args[1])
 		idx := int(idxF)
-		if idx < 0 || idx >= len(arr) {
-			return nil, true, fmt.Errorf("array.set index out of range")
+		switch a := args[0].(type) {
+		case *pineArray:
+			if idx < 0 || idx >= len(a.items) {
+				return nil, true, fmt.Errorf("array.set index out of range")
+			}
+			a.items[idx] = args[2]
+			return a, true, nil
+		case []interface{}:
+			if idx < 0 || idx >= len(a) {
+				return nil, true, fmt.Errorf("array.set index out of range")
+			}
+			a[idx] = args[2]
+			return a, true, nil
+		default:
+			return nil, true, fmt.Errorf("array.set requires array")
 		}
-		arr[idx] = args[2]
-		return arr, true, nil
 	case "array.push":
 		if len(args) != 2 {
 			return nil, true, fmt.Errorf("array.push expects 2 args")
 		}
-		arr, ok := args[0].([]interface{})
-		if !ok {
+		switch a := args[0].(type) {
+		case *pineArray:
+			a.items = append(a.items, args[1])
+			return a, true, nil
+		case []interface{}:
+			a = append(a, args[1])
+			return a, true, nil
+		default:
 			return nil, true, fmt.Errorf("array.push requires array")
 		}
-		arr = append(arr, args[1])
-		return arr, true, nil
 	case "array.pop":
 		if len(args) != 1 {
 			return nil, true, fmt.Errorf("array.pop expects 1 arg")
 		}
-		arr, ok := args[0].([]interface{})
-		if !ok {
+		switch a := args[0].(type) {
+		case *pineArray:
+			if len(a.items) == 0 {
+				return nil, true, fmt.Errorf("array.pop from empty array")
+			}
+			v := a.items[len(a.items)-1]
+			a.items = a.items[:len(a.items)-1]
+			return v, true, nil
+		case []interface{}:
+			if len(a) == 0 {
+				return nil, true, fmt.Errorf("array.pop from empty array")
+			}
+			return a[len(a)-1], true, nil
+		default:
 			return nil, true, fmt.Errorf("array.pop requires array")
 		}
-		if len(arr) == 0 {
-			return nil, true, fmt.Errorf("array.pop from empty array")
-		}
-		return arr[len(arr)-1], true, nil
 	case "array.unshift":
 		if len(args) != 2 {
 			return nil, true, fmt.Errorf("array.unshift expects 2 args")
 		}
-		arr, ok := args[0].([]interface{})
-		if !ok {
+		switch a := args[0].(type) {
+		case *pineArray:
+			a.items = append([]interface{}{args[1]}, a.items...)
+			return a, true, nil
+		case []interface{}:
+			a = append([]interface{}{args[1]}, a...)
+			return a, true, nil
+		default:
 			return nil, true, fmt.Errorf("array.unshift requires array")
 		}
-		arr = append([]interface{}{args[1]}, arr...)
-		return arr, true, nil
 	case "array.shift":
 		if len(args) != 1 {
 			return nil, true, fmt.Errorf("array.shift expects 1 arg")
 		}
-		arr, ok := args[0].([]interface{})
-		if !ok {
+		switch a := args[0].(type) {
+		case *pineArray:
+			if len(a.items) == 0 {
+				return nil, true, fmt.Errorf("array.shift from empty array")
+			}
+			v := a.items[0]
+			a.items = a.items[1:]
+			return v, true, nil
+		case []interface{}:
+			if len(a) == 0 {
+				return nil, true, fmt.Errorf("array.shift from empty array")
+			}
+			return a[0], true, nil
+		default:
 			return nil, true, fmt.Errorf("array.shift requires array")
 		}
-		if len(arr) == 0 {
-			return nil, true, fmt.Errorf("array.shift from empty array")
-		}
-		return arr[0], true, nil
 	case "array.clear":
 		if len(args) != 1 {
 			return nil, true, fmt.Errorf("array.clear expects 1 arg")
 		}
-		if _, ok := args[0].([]interface{}); !ok {
+		switch a := args[0].(type) {
+		case *pineArray:
+			a.items = nil
+			return a, true, nil
+		case []interface{}:
+			return []interface{}{}, true, nil
+		default:
 			return nil, true, fmt.Errorf("array.clear requires array")
 		}
-		return []interface{}{}, true, nil
+	case "array.remove":
+		if len(args) != 2 {
+			return nil, true, fmt.Errorf("array.remove expects 2 args")
+		}
+		idxF, _ := toFloat(args[1])
+		idx := int(idxF)
+		switch a := args[0].(type) {
+		case *pineArray:
+			if idx < 0 || idx >= len(a.items) {
+				return nil, true, fmt.Errorf("array.remove index out of range")
+			}
+			v := a.items[idx]
+			a.items = append(a.items[:idx], a.items[idx+1:]...)
+			return v, true, nil
+		case []interface{}:
+			if idx < 0 || idx >= len(a) {
+				return nil, true, fmt.Errorf("array.remove index out of range")
+			}
+			return a[idx], true, nil
+		default:
+			return nil, true, fmt.Errorf("array.remove requires array")
+		}
 	case "array.concat":
 		if len(args) != 2 {
 			return nil, true, fmt.Errorf("array.concat expects 2 args")
 		}
-		a, ok := args[0].([]interface{})
-		if !ok {
-			return nil, true, fmt.Errorf("array.concat requires arrays")
+		as, err := asArrayArg(args[0], "array.concat")
+		if err != nil {
+			return nil, true, err
 		}
-		b, ok := args[1].([]interface{})
-		if !ok {
-			return nil, true, fmt.Errorf("array.concat requires arrays")
+		bs, err := asArrayArg(args[1], "array.concat")
+		if err != nil {
+			return nil, true, err
 		}
-		out := append([]interface{}{}, a...)
-		out = append(out, b...)
+		out := append([]interface{}{}, as...)
+		out = append(out, bs...)
+		if isPineArrayArg(args[0]) || isPineArrayArg(args[1]) {
+			return &pineArray{items: out}, true, nil
+		}
 		return out, true, nil
 	case "array.slice":
 		if len(args) != 2 && len(args) != 3 {
 			return nil, true, fmt.Errorf("array.slice expects 2 or 3 args")
 		}
-		arr, ok := args[0].([]interface{})
-		if !ok {
-			return nil, true, fmt.Errorf("array.slice requires array")
+		arr, err := asArrayArg(args[0], "array.slice")
+		if err != nil {
+			return nil, true, err
 		}
 		fromF, _ := toFloat(args[1])
 		from := int(fromF)
@@ -382,14 +620,18 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 		if from > to {
 			from = to
 		}
-		return append([]interface{}{}, arr[from:to]...), true, nil
+		out := append([]interface{}{}, arr[from:to]...)
+		if isPineArrayArg(args[0]) {
+			return &pineArray{items: out}, true, nil
+		}
+		return out, true, nil
 	case "array.includes":
 		if len(args) != 2 {
 			return nil, true, fmt.Errorf("array.includes expects 2 args")
 		}
-		arr, ok := args[0].([]interface{})
-		if !ok {
-			return nil, true, fmt.Errorf("array.includes requires array")
+		arr, err := asArrayArg(args[0], "array.includes")
+		if err != nil {
+			return nil, true, err
 		}
 		for _, v := range arr {
 			if compareEq(v, args[1]) {
@@ -401,9 +643,9 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 		if len(args) != 2 {
 			return nil, true, fmt.Errorf("array.indexof expects 2 args")
 		}
-		arr, ok := args[0].([]interface{})
-		if !ok {
-			return nil, true, fmt.Errorf("array.indexof requires array")
+		arr, err := asArrayArg(args[0], "array.indexof")
+		if err != nil {
+			return nil, true, err
 		}
 		for i, v := range arr {
 			if compareEq(v, args[1]) {
@@ -433,28 +675,41 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 		if err != nil {
 			return nil, true, err
 		}
-		return append([]interface{}{}, arr...), true, nil
+		out := append([]interface{}{}, arr...)
+		if isPineArrayArg(args[0]) {
+			return &pineArray{items: out}, true, nil
+		}
+		return out, true, nil
 	case "array.from":
 		out := make([]interface{}, len(args))
 		copy(out, args)
-		return out, true, nil
+		return &pineArray{items: out}, true, nil
 	case "array.insert":
 		if len(args) != 3 {
 			return nil, true, fmt.Errorf("array.insert expects 3 args")
 		}
-		arr, err := asArrayArg(args[0], "array.insert")
-		if err != nil {
-			return nil, true, err
-		}
 		idxF, _ := toFloat(args[1])
 		idx := int(idxF)
-		if idx < 0 || idx > len(arr) {
-			return nil, true, fmt.Errorf("array.insert index out of range")
+		switch a := args[0].(type) {
+		case *pineArray:
+			if idx < 0 || idx > len(a.items) {
+				return nil, true, fmt.Errorf("array.insert index out of range")
+			}
+			a.items = append(a.items, nil)
+			copy(a.items[idx+1:], a.items[idx:])
+			a.items[idx] = args[2]
+			return a, true, nil
+		case []interface{}:
+			if idx < 0 || idx > len(a) {
+				return nil, true, fmt.Errorf("array.insert index out of range")
+			}
+			a = append(a, nil)
+			copy(a[idx+1:], a[idx:])
+			a[idx] = args[2]
+			return a, true, nil
+		default:
+			return nil, true, fmt.Errorf("array.insert requires array")
 		}
-		arr = append(arr, nil)
-		copy(arr[idx+1:], arr[idx:])
-		arr[idx] = args[2]
-		return arr, true, nil
 	case "array.first":
 		if len(args) != 1 {
 			return nil, true, fmt.Errorf("array.first expects 1 arg")
@@ -533,6 +788,9 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 				return nil, true, fmt.Errorf("array.abs requires numeric array")
 			}
 			out[i] = math.Abs(f)
+		}
+		if isPineArrayArg(args[0]) {
+			return &pineArray{items: out}, true, nil
 		}
 		return out, true, nil
 	case "array.sum":
@@ -1303,11 +1561,19 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 }
 
 func asArrayArg(v interface{}, fn string) ([]interface{}, error) {
-	arr, ok := v.([]interface{})
-	if !ok {
+	switch arr := v.(type) {
+	case []interface{}:
+		return arr, nil
+	case *pineArray:
+		return arr.items, nil
+	default:
 		return nil, fmt.Errorf("%s requires array", fn)
 	}
-	return arr, nil
+}
+
+func isPineArrayArg(v interface{}) bool {
+	_, ok := v.(*pineArray)
+	return ok
 }
 
 func arrayNumericValues(v interface{}, fn string) ([]float64, error) {
