@@ -186,7 +186,7 @@ Time/session notes:
 
 These return explicit runtime errors (`unsupported feature: ...`).
 
-## Example
+## Examples
 
 See:
 
@@ -200,6 +200,14 @@ go run ./examples/basic
 ```
 
 This example demonstrates the minimal execution path: construct an `Engine`, register a `Provider`, set the default symbol, compile a Pine-style script to bytecode, and execute that bytecode against provider-backed series data.
+
+<strong>Complex Example</strong>
+
+Run the volume profile harness (Please check the comment in `examples/volume_profile_pivot_anchored/script.pine` for downloading the original script from TradingView):
+
+```bash
+go run ./examples/volume_profile_pivot_anchored
+```
 
 ### Example Structure
 
@@ -268,12 +276,6 @@ sequenceDiagram
 
 	RT-->>Eng: lastValue
 	Eng-->>App: result
-```
-
-Run the volume profile harness (Please check the comment in `examples/volume_profile_pivot_anchored/script.pine` for downloading the original script from TradingView):
-
-```bash
-go run ./examples/volume_profile_pivot_anchored
 ```
 
 ## Security
