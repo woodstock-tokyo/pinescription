@@ -239,7 +239,7 @@ sequenceDiagram
 	participant RT as Runtime
 
 	App->>Eng: NewEngine()
-	App->>Eng: RegisterProvider(demoProvider)
+	App->>Eng: RegisterMarketDataProvider(demoProvider)
 	App->>Eng: SetDefaultSymbol("DEMO")
 	App->>Eng: Compile(script)
 	Eng->>Eng: normalize()
