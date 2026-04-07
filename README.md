@@ -4,7 +4,24 @@ SPDX-FileCopyrightText: 2026 Woodstock K.K.
 SPDX-License-Identifier: AGPL-3.0-only
 -->
 
-# Pinescription
+<p align="center">
+  <img alt="Pinescription Logo" src="./logo.png">
+
+
+<h3 align="center">No Webhooks. No Lock-in. Just Execution.</h3><br>
+<p align="center">
+  Bring PineScript into production-grade environments.<br>
+Backtest locally, execute directly against broker APIs, and eliminate missed signals caused by webhook failures.
+With no third-party MCP dependencies, your trading infrastructure stays secure and fully under your control.
+</p>
+
+<p align="center">
+  <a href="#license"><img src="https://img.shields.io/badge/License-AGPL--3.0%20%2F%20Commercial-blue.svg?style=flat-square" alt="License"></a>
+  <a href="https://x.com/woodstockapp"><img alt="X (formerly Twitter) URL" src="https://img.shields.io/twitter/url?url=https%3A%2F%2Fx.com%2Fwoodstockapp&style=flat&logo=X&label=Woodstock"></a>
+  <a href="https://woodstock.co"><img alt="Static Badge" src="https://img.shields.io/badge/Woodstock-%E6%A0%AA%E5%BC%8F%E4%BC%9A%E7%A4%BE-blue?style=flat&logo=W&link=https%3A%2F%2Fwoodstock.co%2F"></a>
+</p>
+
+---
 
 `Pinescription` is a Pine Script v6-oriented compiler/runtime in Go, released by Woodstock K.K.
 
