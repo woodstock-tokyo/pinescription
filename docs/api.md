@@ -145,7 +145,7 @@ Compiles Pine Script source into bytecode using this engine instance.
 func (e *Engine) Execute(bytecode []byte) (interface{}, error)
 ```
 
-Executes bytecode and returns the final value. This is a convenience method that discards the runtime state after execution.
+Executes bytecode and returns the final value. This is a convenience method that does not return the runtime directly, but it still updates the engine's latest runtime state. The runtime remains available via `Engine.Runtime()` until `ClearRuntime()` is called.
 
 **Parameters:**
 - `bytecode`: Compiled bytecode.
@@ -310,7 +310,7 @@ type Provider interface {
 ### GetSeries
 
 ```go
-func (p Provider) GetSeries(seriesKey string) (SeriesExtended, error)
+func (p *Provider) GetSeries(seriesKey string) (SeriesExtended, error)
 ```
 
 Retrieves a time series for the given key. The `seriesKey` format is `symbol + "|" + value_type`, for example `"AAPL|close"`, `"GOOGL|volume"`, or `"MSFT|high"`.
@@ -546,6 +546,7 @@ package main
 
 import (
     "fmt"
+    "log"
     pinego "github.com/woodstock-tokyo/pinescription"
 )
 
