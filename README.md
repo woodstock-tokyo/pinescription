@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 Woodstock K.K.
 SPDX-License-Identifier: AGPL-3.0-only
 -->
 
-<p align="center"><img src="./logo.png" alt="Pinescription" width="400"></p>
+<p align="center"><img src="./logo.png" alt="Pinescription" width="600"></p>
 
 <h1 align="center">Pinescription</h1>
 
