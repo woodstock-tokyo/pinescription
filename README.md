@@ -65,8 +65,14 @@ var ex = ema(close, 20)
 ma + ex
 `
 
-    bytecode, _ := engine.Compile(script)
-    result, _ := engine.Execute(bytecode)
+    bytecode, err := engine.Compile(script)
+    if err != nil {
+        panic(err)
+    }
+    result, err := engine.Execute(bytecode)
+    if err != nil {
+        panic(err)
+    }
     fmt.Println("Result:", result)
 }
 ```
@@ -143,7 +149,7 @@ Common series keys include `AAPL|close`, `AAPL|volume`, etc.
 
 ---
 
-## Not Yet Supported
+## Unsupported in Open Source Version - Need Custom Function Hooks
 
 - Strategy APIs (`strategy.entry`, `strategy.exit`...)
 - Plot APIs (`plot`, `plotshape`...)
