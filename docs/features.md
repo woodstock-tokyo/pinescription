@@ -343,5 +343,5 @@ All `strategy.*` functions return an unsupported feature error:
 All plotting functions return an unsupported feature error:
 
 - `plot`, `plotshape`, `plotchar`, `plotbar`, `plotcandle`
-- `plotarrow`, `plotbarre`, `fill`, `bgcolor`
+- `plotarrow`, `fill` 
 - And all other visualization functions
