@@ -52,6 +52,9 @@ func BenchmarkSeriesFromExprExtraction(b *testing.B) {
 		Left:  &Expr{Kind: "ident", Name: "close"},
 		Right: &Expr{Kind: "number", Number: 2},
 	}
+	// Benchmarks build Exprs manually, so we need to lower them to populate
+	// opcode fields (KOp/UOp/BOp/BID) used by the runtime fast paths.
+	lowerExpr(expr)
 
 	b.Run("slow", func(b *testing.B) {
 		b.ResetTimer()
