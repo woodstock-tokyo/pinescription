@@ -11,10 +11,15 @@ import (
 	"sort"
 )
 
+// Matrix represents a two-dimensional matrix of float64 values backed by a
+// slice of row slices. Matrices are used internally by Pine Script's
+// matrix operations (matrix.new, matrix.* functions) and are also returned
+// by matrix-valued built-in functions.
 type Matrix struct {
 	Data [][]float64
 }
 
+// newMatrix creates a rows-by-cols matrix filled with the given value.
 func newMatrix(rows, cols int, fill float64) (*Matrix, error) {
 	if rows < 0 || cols < 0 {
 		return nil, errors.New("matrix dimensions must be non-negative")
@@ -295,6 +300,8 @@ func (m *Matrix) submatrix(rowFrom, rowTo, colFrom, colTo int) (*Matrix, error) 
 	return &Matrix{Data: data}, nil
 }
 
+// matrixConcat concatenates two matrices either horizontally (same row count)
+// or vertically (same column count). Returns an error if neither dimension matches.
 func matrixConcat(a, b *Matrix) (*Matrix, error) {
 	if a.rows() == b.rows() {
 		out := a.copy()
@@ -313,6 +320,8 @@ func matrixConcat(a, b *Matrix) (*Matrix, error) {
 	return nil, errors.New("concat requires equal rows (horizontal) or equal columns (vertical)")
 }
 
+// matrixDiff returns the element-wise difference a - b. Both matrices must have
+// the same dimensions. Returns an error if dimensions do not match.
 func matrixDiff(a, b *Matrix) (*Matrix, error) {
 	if a.rows() != b.rows() || a.cols() != b.cols() {
 		return nil, errors.New("matrix dimensions mismatch")
@@ -326,6 +335,9 @@ func matrixDiff(a, b *Matrix) (*Matrix, error) {
 	return out, nil
 }
 
+// matrixMult computes the standard matrix product of a and b, returning the
+// resulting matrix. The number of columns in a must equal the number of rows in b.
+// Returns an error if the dimensions are incompatible.
 func matrixMult(a, b *Matrix) (*Matrix, error) {
 	if a.cols() != b.rows() {
 		return nil, errors.New("matrix multiplication dimension mismatch")
@@ -347,6 +359,8 @@ func matrixMult(a, b *Matrix) (*Matrix, error) {
 	return out, nil
 }
 
+// matrixKron computes the Kronecker product of a and b, producing a block matrix
+// where each element of a is multiplied by the entire matrix b.
 func matrixKron(a, b *Matrix) *Matrix {
 	out, _ := newMatrix(a.rows()*b.rows(), a.cols()*b.cols(), 0)
 	for i := 0; i < a.rows(); i++ {
@@ -361,6 +375,9 @@ func matrixKron(a, b *Matrix) *Matrix {
 	return out
 }
 
+// matrixPow computes the matrix power a^p using binary exponentiation.
+// a must be square. p must be non-negative. Returns an error if a is not square
+// or if p is negative.
 func matrixPow(a *Matrix, p int) (*Matrix, error) {
 	if a.rows() != a.cols() {
 		return nil, errors.New("matrix.pow requires square matrix")
@@ -397,6 +414,7 @@ func matrixPow(a *Matrix, p int) (*Matrix, error) {
 	return result, nil
 }
 
+// matrixTranspose returns the transpose of matrix a, where rows become columns.
 func matrixTranspose(a *Matrix) *Matrix {
 	out, _ := newMatrix(a.cols(), a.rows(), 0)
 	for r := 0; r < a.rows(); r++ {
@@ -407,6 +425,8 @@ func matrixTranspose(a *Matrix) *Matrix {
 	return out
 }
 
+// matrixDet computes the determinant of a square matrix using Gaussian elimination.
+// Returns an error if the matrix is not square.
 func matrixDet(a *Matrix) (float64, error) {
 	if a.rows() != a.cols() {
 		return 0, errors.New("determinant requires square matrix")
@@ -441,6 +461,8 @@ func matrixDet(a *Matrix) (float64, error) {
 	return det * sign, nil
 }
 
+// matrixRank computes the rank (number of linearly independent rows/columns) of a
+// matrix using Gaussian elimination with partial pivoting.
 func matrixRank(a *Matrix) int {
 	m := a.copy().Data
 	rows, cols := a.rows(), a.cols()
@@ -476,6 +498,8 @@ func matrixRank(a *Matrix) int {
 	return rank
 }
 
+// matrixInv computes the inverse of a square matrix using Gauss-Jordan elimination.
+// Returns an error if the matrix is not square or is singular.
 func matrixInv(a *Matrix) (*Matrix, error) {
 	if a.rows() != a.cols() {
 		return nil, errors.New("inverse requires square matrix")
@@ -521,6 +545,9 @@ func matrixInv(a *Matrix) (*Matrix, error) {
 	return out, nil
 }
 
+// matrixPinv computes the Moore-Penrose pseudoinverse of matrix a. For tall matrices
+// (rows >= cols) it computes (A^T A)^-1 A^T; for wide matrices it computes
+// A^T (A A^T)^-1. Returns an error if the intermediate matrix is singular.
 func matrixPinv(a *Matrix) (*Matrix, error) {
 	at := matrixTranspose(a)
 	if a.rows() >= a.cols() {
@@ -545,6 +572,8 @@ func matrixPinv(a *Matrix) (*Matrix, error) {
 	return matrixMult(at, inv)
 }
 
+// matrixTrace returns the trace (sum of diagonal elements) of a square matrix.
+// Returns an error if the matrix is not square.
 func matrixTrace(a *Matrix) (float64, error) {
 	if a.rows() != a.cols() {
 		return 0, errors.New("trace requires square matrix")
@@ -556,6 +585,10 @@ func matrixTrace(a *Matrix) (float64, error) {
 	return t, nil
 }
 
+// matrixEigen computes the eigenvalues and eigenvectors of a square matrix using
+// the QR iteration algorithm. eigenvalues is returned as a slice of floats sorted
+// in descending order. eigenvectors is a square matrix where each column is the
+// corresponding eigenvector. Returns an error if the matrix is not square.
 func matrixEigen(a *Matrix) ([]float64, *Matrix, error) {
 	if a.rows() != a.cols() {
 		return nil, nil, errors.New("eigenvalues/eigenvectors require square matrix")
@@ -639,6 +672,7 @@ func matrixEigen(a *Matrix) ([]float64, *Matrix, error) {
 	return sortedVals, sortedVecs, nil
 }
 
+// matrixIdentity returns an n-by-n identity matrix with ones on the main diagonal.
 func matrixIdentity(n int) *Matrix {
 	m, _ := newMatrix(n, n, 0)
 	for i := 0; i < n; i++ {
@@ -647,6 +681,9 @@ func matrixIdentity(n int) *Matrix {
 	return m
 }
 
+// matrixQRDecompose computes the QR decomposition of a square matrix a, returning
+// orthogonal matrix Q and upper-triangular matrix R such that a = QR.
+// Returns an error if the matrix is not square.
 func matrixQRDecompose(a *Matrix) (*Matrix, *Matrix, error) {
 	if a.rows() != a.cols() {
 		return nil, nil, errors.New("QR decomposition currently requires square matrix")
@@ -692,6 +729,9 @@ func matrixQRDecompose(a *Matrix) (*Matrix, *Matrix, error) {
 	return q, r, nil
 }
 
+// matrixStats computes descriptive statistics for a slice of float64 values,
+// returning sum, min, max, average, median, and mode. For an empty slice all
+// returned values are NaN.
 func matrixStats(values []float64) (sum, min, max, avg, median, mode float64) {
 	if len(values) == 0 {
 		return 0, math.NaN(), math.NaN(), math.NaN(), math.NaN(), math.NaN()
@@ -729,6 +769,8 @@ func matrixStats(values []float64) (sum, min, max, avg, median, mode float64) {
 	return
 }
 
+// matrixFromArg extracts a *Matrix from a runtime value. It returns an error if the
+// value is not a matrix or is malformed.
 func matrixFromArg(v interface{}) (*Matrix, error) {
 	m, ok := v.(*Matrix)
 	if !ok || m == nil {
@@ -740,6 +782,8 @@ func matrixFromArg(v interface{}) (*Matrix, error) {
 	return m, nil
 }
 
+// floatSliceFromInterfaces converts a slice of interface{} values to []float64,
+// returning an error if any item is not convertible to a float.
 func floatSliceFromInterfaces(items []interface{}) ([]float64, error) {
 	out := make([]float64, len(items))
 	for i, item := range items {
@@ -752,6 +796,7 @@ func floatSliceFromInterfaces(items []interface{}) ([]float64, error) {
 	return out, nil
 }
 
+// boolToFloat converts a boolean to 1.0 (true) or 0.0 (false).
 func boolToFloat(v bool) float64 {
 	if v {
 		return 1

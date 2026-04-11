@@ -4,6 +4,10 @@
 
 package series
 
+// Queue is a fixed-size circular buffer that implements Series.
+// It stores up to size values, discarding oldest values when full.
+// New values are added via Update, and existing values are accessed
+// via Last or Index with Last(0) returning the most recent value.
 type Queue struct {
 	SeriesBase
 	arr      []float64
@@ -13,7 +17,9 @@ type Queue struct {
 	realSize int
 }
 
-// getRealSize returns the next power of two - 1 greater than or equal to n
+// getRealSize returns the next power of two minus one that is
+// greater than or equal to n. Used internally for efficient
+// circular buffer indexing.
 func getRealSize(n int) int {
 	if n <= 1 {
 		return 1
@@ -30,6 +36,8 @@ func getRealSize(n int) int {
 	return n
 }
 
+// NewQueue creates a new Queue with the specified maximum size.
+// The queue starts empty and grows as values are added via Update.
 func NewQueue(size int) *Queue {
 	realSize := getRealSize(size)
 	out := &Queue{
@@ -62,6 +70,7 @@ func (inc *Queue) Length() int {
 	return len(inc.arr)
 }
 
+// Clone returns a deep copy of the queue with the same state.
 func (inc *Queue) Clone() *Queue {
 	arrCopy := make([]float64, len(inc.arr), cap(inc.arr))
 	copy(arrCopy, inc.arr)
@@ -76,6 +85,8 @@ func (inc *Queue) Clone() *Queue {
 	return out
 }
 
+// Update appends a new value to the queue. If the queue is at capacity,
+// the oldest value is discarded to make room (circular buffer behavior).
 func (inc *Queue) Update(v float64) {
 	c := len(inc.arr)
 	if c <= inc.realSize {

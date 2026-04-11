@@ -4,8 +4,8 @@
 
 package series
 
-// The result structure that maps to the crossing result of `CrossOver` and `CrossUnder`
-// Accessible through BoolSeries interface
+// CrossResult represents the crossing state between two series.
+// It implements BoolSeries, returning true when a cross event is detected.
 type CrossResult struct {
 	a      Series
 	b      Series
@@ -39,18 +39,16 @@ func (c *CrossResult) Length() int {
 	return la
 }
 
-// a series cross above b series.
-// If in current KLine, a is higher than b, and in previous KLine, a is lower than b, then return true.
-// Otherwise return false.
-// If accessing index >= length, will always return false
+// CrossOver returns a BoolSeries that is true when series a crosses above series b.
+// The cross is detected when a was below b in the previous bar but is above b
+// in the current bar. Returns false for indices beyond the series length.
 func CrossOver(a Series, b Series) BoolSeries {
 	return &CrossResult{a, b, true}
 }
 
-// a series cross under b series.
-// If in current KLine, a is lower than b, and in previous KLine, a is higher than b, then return true.
-// Otherwise return false.
-// If accessing index >= length, will always return false
+// CrossUnder returns a BoolSeries that is true when series a crosses below series b.
+// The cross is detected when a was above b in the previous bar but is below b
+// in the current bar. Returns false for indices beyond the series length.
 func CrossUnder(a Series, b Series) BoolSeries {
 	return &CrossResult{a, b, false}
 }

@@ -4,6 +4,9 @@
 
 package series
 
+// FilterResult holds a series and a predicate function. When queried,
+// it returns only values for which the predicate returns true.
+// It caches matched indices to avoid recomputation.
 type FilterResult struct {
 	a      Series
 	b      func(int, float64) bool
@@ -45,11 +48,16 @@ func (f *FilterResult) Length() int {
 	return f.length
 }
 
-// Filter function filters Series by using a boolean function.
-// When the boolean function returns true, the Series value at index i will be included in the returned Series.
-// The returned Series will find at most `length` latest matching elements from the input Series.
-// Query index larger or equal than length from the returned Series will return 0 instead.
-// Notice that any Update on the input Series will make the previously returned Series outdated.
+// FilterSeries returns a new series containing only values from the input series
+// for which the predicate function returns true. The predicate receives the
+// bar index and value at each position.
+//
+// The returned series will contain at most the most recent 'length' matching elements.
+// Accessing beyond that index returns 0.
+//
+// The predicate function should be pure (no side effects). Subsequent calls to
+// the predicate for the same index may return different results if the
+// underlying series changes.
 func FilterSeries(a Series, b func(i int, value float64) bool, length int) SeriesExtend {
 	return NewSeries(&FilterResult{a, b, length, nil})
 }

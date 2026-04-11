@@ -87,6 +87,11 @@ type flow struct {
 	hasValue bool
 }
 
+// RuntimeSnapshot is a point-in-time view of the execution state produced by Runtime.Snapshot.
+// BarIndex is the zero-based index of the current bar. LastValue is the numeric result
+// of the last evaluated expression. Symbols and SeriesKeys describe the data in use.
+// Variables holds the current value of every top-level variable and function parameter
+// in scope, keyed by name.
 type RuntimeSnapshot struct {
 	BarIndex        int
 	LastValue       float64
@@ -97,6 +102,9 @@ type RuntimeSnapshot struct {
 	Variables       map[string]interface{}
 }
 
+// Runtime represents the execution state of a compiled Pine Script program. It is
+// produced by Engine.ExecuteWithRuntime and must not be mutated by callers. After
+// a Runtime is no longer needed, call Release to return pooled memory.
 type Runtime struct {
 	program Program
 	userFns map[string]UserFunction
@@ -218,6 +226,9 @@ var builtinCallParamSpecs = map[string]callParamSpec{
 	"table.new":    {Names: []string{"position", "columns", "rows", "bgcolor", "frame_color", "frame_width", "border_color", "border_width"}, Required: 3},
 }
 
+// Release returns all internal memory held by the Runtime to the object pools.
+// After Release the Runtime is in an invalid state and must not be used.
+// Release is safe to call on a nil Runtime.
 func (r *Runtime) Release() {
 	if r == nil {
 		return
@@ -412,6 +423,10 @@ func (r *Runtime) initRootEnv() {
 	}
 }
 
+// SetBarIndex advances the runtime to the given zero-based bar index.
+// This updates the cached OHLCV values and the barstate.islast flag.
+// It is called automatically by Engine during ExecuteWithRuntime, but can
+// also be called manually for step-through inspection or replay.
 func (r *Runtime) SetBarIndex(i int) {
 	r.barIndex = i
 	if len(r.envStack) == 0 {
@@ -565,6 +580,15 @@ func (r *Runtime) getSeriesByIdentifier(symbol, valueType string) (SeriesExtende
 	return ser, nil
 }
 
+// Snapshot returns a snapshot of the current runtime state, including the active
+// bar index, last numeric result, the active symbol and value type, all available
+// symbols and series keys, and a copy of the top-level variable map.
+//
+// Example:
+//
+//	rt, result, _ := engine.ExecuteWithRuntime(bytecode)
+//	snap := rt.Snapshot()
+//	fmt.Println("bar_index:", snap.BarIndex, "result:", snap.LastValue)
 func (r *Runtime) Snapshot() RuntimeSnapshot {
 	vars := map[string]interface{}{}
 	for _, scope := range r.envStack {
@@ -583,6 +607,9 @@ func (r *Runtime) Snapshot() RuntimeSnapshot {
 	}
 }
 
+// Symbols returns the sorted list of all symbols referenced during execution.
+// This includes the active symbol, any symbol explicitly used in Pine Script
+// calls like close_of, and symbols discovered from multi-symbol indicators.
 func (r *Runtime) Symbols() []string {
 	seen := map[string]bool{}
 	for symbol := range r.valueTypesBySymbol {
@@ -605,6 +632,8 @@ func (r *Runtime) Symbols() []string {
 	return out
 }
 
+// SeriesKeys returns the sorted list of all series keys in the format "symbol|valueType"
+// that were loaded or derived during execution.
 func (r *Runtime) SeriesKeys() []string {
 	out := make([]string, 0, len(r.seriesByKey))
 	for key := range r.seriesByKey {
@@ -614,6 +643,8 @@ func (r *Runtime) SeriesKeys() []string {
 	return out
 }
 
+// ValueTypes returns the sorted list of value types available for the given symbol,
+// such as "close", "high", "volume". Returns nil if the symbol was not used.
 func (r *Runtime) ValueTypes(symbol string) []string {
 	set, ok := r.valueTypesBySymbol[symbol]
 	if !ok {
@@ -627,6 +658,9 @@ func (r *Runtime) ValueTypes(symbol string) []string {
 	return out
 }
 
+// Series returns the SeriesExtended for the given series key (e.g. "AAPL|close")
+// and a boolean indicating whether it was found. For price-derived value types
+// (hl2, hlc3, ohlc4), this lazily computes the series from the base OHLC data.
 func (r *Runtime) Series(seriesKey string) (SeriesExtended, bool) {
 	if seriesKey == "" {
 		return nil, false
@@ -645,6 +679,10 @@ func (r *Runtime) Series(seriesKey string) (SeriesExtended, bool) {
 	return ser, true
 }
 
+// Value returns the most recent value of the named variable in the execution scope,
+// and a boolean indicating whether the variable exists. For history-tracked variables
+// it returns the value at the last bar; for function parameters it returns the
+// current stack value.
 func (r *Runtime) Value(name string) (interface{}, bool) {
 	for i := len(r.envStack) - 1; i >= 0; i-- {
 		if v, ok := r.envStack[i][name]; ok {

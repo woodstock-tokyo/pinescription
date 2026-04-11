@@ -29,26 +29,80 @@ func normalizePineScriptCompat(source string) string {
 	})
 }
 
+// SeriesExtended is an alias for the series extension interface defined in the
+// woodstock-utils series package. It represents a time series of float values
+// with variable-length lookback, used to supply OHLCV and derived data to the
+// runtime. The interface includes Length, Last, and arithmetic methods.
 type SeriesExtended = series.SeriesExtend
 
+// Provider is the interface that market data backends must implement to supply
+// time-series data to the engine. A provider is registered on an Engine with
+// RegisterMarketDataProvider. The same provider instance can serve multiple
+// symbols and value types, but each distinct symbol/value-type pair is keyed
+// as "symbol|valueType" in calls to GetSeries.
+//
+// Example provider implementation skeleton:
+//
+//	type myProvider struct{}
+//
+//	func (p *myProvider) GetSeries(key string) (pinego.SeriesExtended, error) {
+//	    // key is "SYMBOL|valueType", e.g. "AAPL|close"
+//	    symbol, vt, _ := strings.Cut(key, "|")
+//	    return myLoadSeries(symbol, vt)
+//	}
+//	func (p *myProvider) GetSymbols() ([]string, error) { return []string{"AAPL"}, nil }
+//	func (p *myProvider) GetValuesTypes() ([]string, error) { return []string{"close"}, nil }
+//	func (p *myProvider) SetTimeframe(tf string) error { return nil }
+//	func (p *myProvider) GetTimeframe() string { return "1D" }
+//	func (p *myProvider) SetSession(s string) error { return nil }
+//	func (p *myProvider) GetSession() string { return "" }
 type Provider interface {
+	// GetSeries returns the time series identified by seriesKey, which is
+	// formatted as "symbol|valueType" (e.g. "AAPL|close"). Returns an error
+	// if the series is unavailable. The series must contain at least one data point.
 	GetSeries(seriesKey string) (SeriesExtended, error)
+	// GetSymbols returns the list of ticker symbols this provider can serve.
 	GetSymbols() ([]string, error)
+	// GetValuesTypes returns the list of value types available for each symbol.
+	// Common types include "open", "high", "low", "close", "volume", and derived
+	// types such as "hl2", "hlc3", "ohlc4".
 	GetValuesTypes() ([]string, error)
+	// SetTimeframe sets the bar timeframe for subsequent GetSeries calls.
+	// Common values are "1m", "5m", "1h", "1D". Providers may ignore this
+	// if they only serve a single timeframe.
 	SetTimeframe(timeframe string) error
+	// GetTimeframe returns the current bar timeframe string.
 	GetTimeframe() string
+	// SetSession sets the trading session for time-based filtering.
 	SetSession(session string) error
+	// GetSession returns the current trading session string.
 	GetSession() string
 }
 
+// UserFunction is the signature for functions registered via RegisterFunction.
+// The function receives the evaluated Pine Script argument values and returns
+// a result (float, string, bool, or nil) and an error. Returning a non-nil error
+// aborts script execution with that error.
 type UserFunction func(args ...interface{}) (interface{}, error)
 
+// EngineLogEntry represents a single log entry produced during script execution.
+// Level is one of "info", "warning", or "error". Timestamp is the wall-clock
+// time at which the entry was recorded (UTC). Message contains the formatted
+// log text.
 type EngineLogEntry struct {
 	Timestamp time.Time
 	Level     string
 	Message   string
 }
 
+// Engine is the Pine Script compiler and runtime. It holds all configuration
+// for a single execution context: registered providers, user functions, the
+// active symbol and value type, and timing parameters. An Engine may be
+// reused across multiple Compile/Execute cycles, but is not safe for concurrent
+// use by multiple goroutines without external synchronization.
+//
+// Use NewEngine to create an instance, then configure providers and options
+// before calling Compile and Execute.
 type Engine struct {
 	providers        []Provider
 	functions        map[string]UserFunction
@@ -66,6 +120,9 @@ type Engine struct {
 	cacheValid       bool
 }
 
+// AlertEvent describes an alert triggered by a Pine Script alert() call during execution.
+// BarIndex is the zero-based index of the bar on which the alert fired. Time is the
+// UTC close time of that bar. Symbol is the active ticker at the time of firing.
 type AlertEvent struct {
 	Message   string
 	Frequency string
@@ -80,14 +137,32 @@ type providerCatalog struct {
 	orderedSymbols     []string
 }
 
+// NewEngine returns a new, empty Engine configured with no providers or user functions.
+// Call RegisterMarketDataProvider to add a data source, then RegisterFunction for any
+// custom functions before calling Compile and Execute.
+//
+// Example:
+//
+//	engine := pinescription.NewEngine()
+//	engine.RegisterMarketDataProvider(myProvider)
 func NewEngine() *Engine {
 	return &Engine{functions: map[string]UserFunction{}}
 }
 
+// RegisterFunction registers a user-defined function callable from Pine Script.
+// The function's name in Pine Script is the name string provided here. Functions
+// are invoked with positional arguments evaluated according to Pine Script rules.
+// A function with the same name replaces any previously registered function.
 func (e *Engine) RegisterFunction(name string, function UserFunction) {
 	e.functions[name] = function
 }
 
+// RegisterMarketDataProvider adds a market data provider to the engine.
+// Providers are queried in the order they were registered when fetching
+// symbol and value-type data. At least one provider must be registered
+// before Execute is called. If multiple providers are registered, the first
+// provider's timeframe and session values are used as defaults unless
+// overridden by SetTimeframe or SetSession.
 func (e *Engine) RegisterMarketDataProvider(provider Provider) {
 	e.providers = append(e.providers, provider)
 	if e.timeframe == "" {
@@ -98,52 +173,77 @@ func (e *Engine) RegisterMarketDataProvider(provider Provider) {
 	}
 }
 
+// SetDefaultSymbol sets the symbol used as the default source of OHLCV data when
+// Pine Script references price identifiers like close, open, or high without an
+// explicit symbol prefix. If not set, the first symbol from the first registered
+// provider is used.
 func (e *Engine) SetDefaultSymbol(symbol string) {
 	e.defaultSymbol = symbol
 }
 
+// SetDefaultValueType sets the default value type used when Pine Script references
+// a price identifier without an explicit value type suffix. Common values are
+// "close", "open", "high", "low", "volume". If not set, "close" is preferred
+// if available, otherwise the first value type from the provider.
 func (e *Engine) SetDefaultValueType(valueType string) {
 	e.defaultValueType = valueType
 }
 
+// SetTimeframe sets the bar timeframe for all registered providers.
+// Common values include "1m", "5m", "1h", "4h", "1D". This overrides any
+// timeframe returned by individual providers.
 func (e *Engine) SetTimeframe(timeframe string) {
 	e.timeframe = timeframe
 }
 
+// Timeframe returns the currently configured bar timeframe string.
 func (e *Engine) Timeframe() string {
 	return e.timeframe
 }
 
+// SetSession sets the trading session used for time-based filtering in the runtime.
 func (e *Engine) SetSession(session string) {
 	e.session = session
 }
 
+// Session returns the currently configured trading session string.
 func (e *Engine) Session() string {
 	return e.session
 }
 
+// SetCurrentTime sets the wall-clock time used as the current moment during
+// script execution. If not set, time.Now().UTC() is used. This is useful for
+// deterministic testing or for replaying historical data at a known timestamp.
 func (e *Engine) SetCurrentTime(now time.Time) {
 	e.currentTime = now
 }
 
+// CurrentTime returns the currently configured current time.
 func (e *Engine) CurrentTime() time.Time {
 	return e.currentTime
 }
 
+// SetStartTime sets the time of the first bar in the dataset. When combined
+// with the bar timeframe, this determines the timestamp of every bar in the
+// series. If not set, it is inferred from CurrentTime and the number of bars.
 func (e *Engine) SetStartTime(start time.Time) {
 	e.startTime = start
 }
 
+// StartTime returns the currently configured start time.
 func (e *Engine) StartTime() time.Time {
 	return e.startTime
 }
 
+// Logs returns a copy of all log entries produced during the last execution.
+// Each entry includes the UTC timestamp, level, and formatted message.
 func (e *Engine) Logs() []EngineLogEntry {
 	out := make([]EngineLogEntry, len(e.logs))
 	copy(out, e.logs)
 	return out
 }
 
+// ClearLogs removes all accumulated log entries from the engine.
 func (e *Engine) ClearLogs() {
 	e.logs = nil
 }
@@ -158,10 +258,18 @@ func (e *Engine) appendLog(level, message string, ts time.Time) {
 	e.logs = append(e.logs, EngineLogEntry{Timestamp: ts.UTC(), Level: level, Message: message})
 }
 
+// Runtime returns the Runtime instance produced by the most recent Execute call,
+// or nil if Execute has not been called or ClearRuntime was called.
+// The returned Runtime is retained by the Engine and released on the next Execute
+// or on ClearRuntime. Call Snapshot on the returned Runtime to inspect variables
+// and series after execution.
 func (e *Engine) Runtime() *Runtime {
 	return e.lastRuntime
 }
 
+// ClearRuntime releases the Runtime from the last Execute call and clears the
+// bytecode cache. Call this to force a full recompilation on the next Compile
+// or to free memory between unrelated executions.
 func (e *Engine) ClearRuntime() {
 	if e.lastRuntime != nil {
 		e.lastRuntime.Release()
@@ -169,10 +277,15 @@ func (e *Engine) ClearRuntime() {
 	e.lastRuntime = nil
 }
 
+// SetAlertSink installs a callback invoked each time a Pine Script alert() call
+// executes. The callback receives an AlertEvent describing the alert. SetAlertSink
+// is optional; if not set, alerts are silently dropped.
 func (e *Engine) SetAlertSink(sink func(AlertEvent)) {
 	e.alertSink = sink
 }
 
+// Symbols returns the sorted list of all ticker symbols available from the
+// registered market data providers. Returns an error if no provider is registered.
 func (e *Engine) Symbols() ([]string, error) {
 	if len(e.providers) == 0 {
 		return nil, errors.New("market data provider is not registered")
@@ -195,6 +308,10 @@ func (e *Engine) Symbols() ([]string, error) {
 	return out, nil
 }
 
+// ValueTypes returns the sorted list of all value types available across all registered
+// providers. Common values include "close", "open", "high", "low", "volume", as well
+// as derived types such as "hl2", "hlc3", "ohlc4". Returns an error if no provider
+// is registered.
 func (e *Engine) ValueTypes() ([]string, error) {
 	if len(e.providers) == 0 {
 		return nil, errors.New("market data provider is not registered")
@@ -337,46 +454,77 @@ func collectNeededSeriesKeys(program Program, activeSymbol, activeValueType stri
 
 var defaultEngine = NewEngine()
 
+// RegisterFunction is a convenience wrapper around defaultEngine.RegisterFunction.
+// It registers a user-defined function on the package-level default Engine.
+// This Engine is shared globally, so registration is permanent for the process
+// lifetime. Prefer creating a private Engine with NewEngine when registering
+// functions that should be isolated between different uses.
 func RegisterFunction(name string, function func(args ...interface{}) (interface{}, error)) {
 	defaultEngine.RegisterFunction(name, function)
 }
 
+// RegisterMarketDataProvider is a convenience wrapper around defaultEngine.RegisterMarketDataProvider.
+// It registers a provider on the package-level default Engine. See RegisterFunction for
+// caveats about the shared global Engine.
 func RegisterMarketDataProvider(provider Provider) {
 	defaultEngine.RegisterMarketDataProvider(provider)
 }
 
+// SetTimeframe is a convenience wrapper around defaultEngine.SetTimeframe.
 func SetTimeframe(timeframe string) {
 	defaultEngine.SetTimeframe(timeframe)
 }
 
+// SetSession is a convenience wrapper around defaultEngine.SetSession.
 func SetSession(session string) {
 	defaultEngine.SetSession(session)
 }
 
+// SetCurrentTime is a convenience wrapper around defaultEngine.SetCurrentTime.
 func SetCurrentTime(now time.Time) {
 	defaultEngine.SetCurrentTime(now)
 }
 
+// SetStartTime is a convenience wrapper around defaultEngine.SetStartTime.
 func SetStartTime(start time.Time) {
 	defaultEngine.SetStartTime(start)
 }
 
+// Logs is a convenience wrapper around defaultEngine.Logs.
 func Logs() []EngineLogEntry {
 	return defaultEngine.Logs()
 }
 
+// ClearLogs is a convenience wrapper around defaultEngine.ClearLogs.
 func ClearLogs() {
 	defaultEngine.ClearLogs()
 }
 
+// Compile compiles the given Pine Script source code to bytecode using the
+// package-level default Engine. On success the bytecode can be passed to
+// Execute. Compilation errors include the source location of the syntax error.
+//
+// Use the Engine method directly if you need to control which Engine instance
+// is used, or to access the Runtime after execution.
 func Compile(pinescript string) ([]byte, error) {
 	return defaultEngine.Compile(pinescript)
 }
 
+// Execute runs pre-compiled bytecode against the registered market data providers
+// using the package-level default Engine and returns the result. The result is
+// the value of the final expression in the script, or nil if the script produces
+// NaN as its final value. Returns an error if the bytecode is invalid, a
+// provider fails, or a runtime error occurs during execution.
 func Execute(bytecode []byte) (interface{}, error) {
 	return defaultEngine.Execute(bytecode)
 }
 
+// Compile compiles Pine Script source to bytecode. The result is cached internally
+// so that repeated calls with the same source do not re-parse. Compilation
+// validates the AST and applies lowering passes before encoding.
+//
+// Returns an error describing the parse failure with source location if the
+// script has syntax errors.
 func (e *Engine) Compile(pinescript string) ([]byte, error) {
 	pinescript = normalizePineScriptCompat(pinescript)
 	program, err := parseProgram(pinescript)
@@ -398,11 +546,26 @@ func (e *Engine) Compile(pinescript string) ([]byte, error) {
 	return bytecode, nil
 }
 
+// Execute runs pre-compiled bytecode against the registered market data providers.
+// The result is the value of the last expression in the compiled script, or nil
+// if the script produces NaN. After execution, Runtime returns the Runtime
+// instance for inspection.
+//
+// Returns an error if no market data provider is registered, the bytecode is
+// corrupt, a provider fails to supply a required series, or a runtime error
+// occurs (such as an unknown identifier or unsupported operation).
 func (e *Engine) Execute(bytecode []byte) (interface{}, error) {
 	_, v, err := e.ExecuteWithRuntime(bytecode)
 	return v, err
 }
 
+// ExecuteWithRuntime is like Execute but also returns the Runtime instance,
+// which holds the execution state after the run completes. Use Runtime.Snapshot
+// to inspect variables, Runtime.Series to retrieve computed series, and
+// Runtime.ValueTypes to list available value types per symbol.
+//
+// After this call, Runtime returns the same Runtime until the next Execute or
+// ClearRuntime. The caller must not mutate the returned Runtime.
 func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, error) {
 	program, err := e.decodeProgramCached(bytecode)
 	if err != nil {

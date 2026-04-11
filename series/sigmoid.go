@@ -6,6 +6,8 @@ package series
 
 import "math"
 
+// SigmoidResult applies the logistic sigmoid function to each value
+// in the underlying series.
 type SigmoidResult struct {
 	a Series
 }
@@ -22,10 +24,9 @@ func (s *SigmoidResult) Length() int {
 	return s.a.Length()
 }
 
-// Sigmoid returns the input values in the range of 0 to 1
-// along the sigmoid or s-shaped curve.
-// Commonly used in machine learning while training neural networks
-// as an activation function.
+// Sigmoid returns a series where each value is transformed through
+// the logistic sigmoid function: 1 / (1 + exp(-x)).
+// Output values are in the range (0, 1).
 func Sigmoid(a Series) SeriesExtend {
 	return NewSeries(&SigmoidResult{a})
 }

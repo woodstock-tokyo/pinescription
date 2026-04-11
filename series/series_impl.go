@@ -10,9 +10,9 @@ import (
 	"gonum.org/v1/gonum/stat"
 )
 
-// Calculate sum of the series
-// if limit is given, will only sum first limit numbers (a.Index[0..limit])
-// otherwise will sum all elements
+// Sum returns the sum of the most recent N values in the series.
+// If limit is not provided, sums all values in the series.
+// Returns 0 for empty series.
 func Sum(a Series, limit ...int) (sum float64) {
 	l := a.Length()
 	if len(limit) > 0 && limit[0] < l {
@@ -24,9 +24,9 @@ func Sum(a Series, limit ...int) (sum float64) {
 	return sum
 }
 
-// Calculate the average value of the series
-// if limit is given, will only calculate the average of first limit numbers (a.Index[0..limit])
-// otherwise will operate on all elements
+// Mean returns the arithmetic mean of the most recent N values.
+// If limit is not provided, computes the mean over all values.
+// Returns 0 for empty series.
 func Mean(a Series, limit ...int) (mean float64) {
 	l := a.Length()
 	if l == 0 {
@@ -38,6 +38,9 @@ func Mean(a Series, limit ...int) (mean float64) {
 	return Sum(a, l) / float64(l)
 }
 
+// Maximum returns the maximum value among the most recent N bars.
+// Examines Last(0) through Last(limit-1). If limit is not provided,
+// examines all available bars. Returns 0 for empty series.
 func Maximum(a Series, limit ...int) (max float64) {
 	l := a.Length()
 	if l == 0 {
@@ -56,6 +59,9 @@ func Maximum(a Series, limit ...int) (max float64) {
 	return max
 }
 
+// Minimum returns the minimum value among the most recent N bars.
+// Examines Last(0) through Last(limit-1). If limit is not provided,
+// examines all available bars. Returns 0 for empty series.
 func Minimum(a Series, limit ...int) (min float64) {
 	l := a.Length()
 	if l == 0 {
@@ -74,11 +80,15 @@ func Minimum(a Series, limit ...int) (min float64) {
 	return min
 }
 
-// Return series that having all the elements positive
+// Abs returns a new series where each value is the absolute value
+// of the corresponding input value.
 func Abs(a Series) SeriesExtend {
 	return NewSeries(&AbsResult{a})
 }
 
+// Predict returns the forecasted value using linear regression.
+// The forecast is offset bars ahead (negative offset means past values).
+// Uses the most recent lookback points for the regression.
 func Predict(a Series, lookback int, offset ...int) float64 {
 	alpha, beta := LinearRegression(a, lookback)
 	o := -1.0
@@ -88,12 +98,15 @@ func Predict(a Series, lookback int, offset ...int) float64 {
 	return alpha + beta*o
 }
 
-// This will make prediction using Linear Regression to get the next cross point
-// Return (offset from latest, crossed value, could cross)
-// offset from latest should always be positive
-// lookback param is to use at most `lookback` points to determine linear regression functions
+// NextCross predicts when series a will cross series b using linear regression.
+// It examines the most recent lookback bars of both series.
 //
-// You may also refer to excel's FORECAST function
+// Returns (bars-until-crossing, crossing-value, will-cross).
+// - bars-until-crossing is positive if the cross occurs in the future.
+// - crossing-value is the y-value at the predicted crossing point.
+// - will-cross is false if the lines are parallel or converging away.
+//
+// This is similar to Excel's FORECAST function extended to find intersection points.
 func NextCross(a Series, b Series, lookback int) (int, float64, bool) {
 	if a.Length() < lookback {
 		lookback = a.Length()
@@ -124,6 +137,9 @@ func NextCross(a Series, b Series, lookback int) (int, float64, bool) {
 	return int(math.Ceil(-indexf)), alpha1 + beta1*indexf, true
 }
 
+// Highest returns the maximum value among the most recent lookback bars.
+// If the series has fewer than lookback bars, examines all available.
+// Returns 0 for empty series.
 func Highest(a Series, lookback int) float64 {
 	if lookback > a.Length() {
 		lookback = a.Length()
@@ -138,6 +154,9 @@ func Highest(a Series, lookback int) float64 {
 	return highest
 }
 
+// Lowest returns the minimum value among the most recent lookback bars.
+// If the series has fewer than lookback bars, examines all available.
+// Returns 0 for empty series.
 func Lowest(a Series, lookback int) float64 {
 	if lookback > a.Length() {
 		lookback = a.Length()
@@ -152,6 +171,9 @@ func Lowest(a Series, lookback int) float64 {
 	return lowest
 }
 
+// LinearRegression fits a line to the most recent lookback values using
+// ordinary least squares. Returns (alpha, beta) where the fitted line is
+// y = alpha + beta*x, with x being the bar index (0, 1, 2, ...).
 func LinearRegression(a Series, lookback int) (alpha float64, beta float64) {
 	if a.Length() < lookback {
 		lookback = a.Length()
@@ -167,9 +189,9 @@ func LinearRegression(a Series, lookback int) (alpha float64, beta float64) {
 	return
 }
 
-// Array extracts elements from the Series to a float64 array, following the order of Index(0..limit)
-// if limit is given, will only take the first limit numbers (a.Index[0..limit])
-// otherwise will operate on all elements
+// Array extracts the most recent N values into a []float64 slice.
+// If limit is not provided, returns all values in the series.
+// The slice order matches Last indexing, so result[0] is Last(0).
 func Array(a Series, limit ...int) (result []float64) {
 	l := a.Length()
 	if len(limit) > 0 && l > limit[0] {
@@ -185,7 +207,9 @@ func Array(a Series, limit ...int) (result []float64) {
 	return
 }
 
-// Ordinary Least Squares fit result, only support 1d array
+// OLS performs ordinary least squares regression using series a as the
+// independent variable and series b as the dependent variable.
+// Returns (alpha, beta) where b ≈ alpha + beta*a.
 func OLS(a SeriesExtend, b SeriesExtend, n int) (float64, float64) {
 	if a.Length() < n {
 		n = a.Length()
@@ -211,11 +235,11 @@ func OLS(a SeriesExtend, b SeriesExtend, n int) (float64, float64) {
 	return alpha, beta
 }
 
-// Similar to Array but in reverse order.
-// Useful when you want to cache series' calculated result as float64 array
-// the then reuse the result in multiple places (so that no recalculation will be triggered)
-//
-// notice that the return type is a Float64Slice, which implements the Series interface
+// Reverse returns a series with values in reverse order.
+// The returned series presents oldest value first when iterated.
+// This is useful for caching computed results as a float64 array,
+// ensuring no recalculation occurs on subsequent accesses.
+// The returned type implements the Series interface.
 func Reverse(a Series, limit ...int) SeriesExtend {
 	l := a.Length()
 	if len(limit) > 0 && l > limit[0] {
@@ -228,6 +252,8 @@ func Reverse(a Series, limit ...int) SeriesExtend {
 	return result
 }
 
+// Rank computes fractional ranks for each value in the most recent length bars.
+// Returned ranks are one-based and tied values receive the average of their ranks.
 func Rank(a Series, length int) SeriesExtend {
 	if length > a.Length() {
 		length = a.Length()
@@ -252,8 +278,8 @@ func Rank(a Series, length int) SeriesExtend {
 	return output
 }
 
-// Difference between current value and previous, a - a[offset]
-// offset: if not given, offset is 1.
+// Change returns a series representing the difference between the current
+// value and the value offset bars ago. Default offset is 1.
 func Change(a Series, offset ...int) SeriesExtend {
 	o := 1
 	if len(offset) > 0 {
@@ -263,8 +289,10 @@ func Change(a Series, offset ...int) SeriesExtend {
 	return NewSeries(&ChangeResult{a, o})
 }
 
-// Percentage change between current and a prior element, a / a[offset] - 1.
-// offset: if not given, offset is 1.
+// PercentageChange returns a series representing the percentage change
+// between the current value and the value offset bars ago.
+// Computes (current / prior) - 1. Default offset is 1.
+// Division by zero produces NaN.
 func PercentageChange(a Series, offset ...int) SeriesExtend {
 	o := 1
 	if len(offset) > 0 {
@@ -274,6 +302,10 @@ func PercentageChange(a Series, offset ...int) SeriesExtend {
 	return NewSeries(&PercentageChangeResult{a, o})
 }
 
+// Stdev returns the sample standard deviation over the most recent N values.
+// The first parameter sets the window size (defaults to full series length).
+// The second parameter sets ddof (delta degrees of freedom, default 0).
+// With ddof=0, computes population standard deviation.
 func Stdev(a Series, params ...int) float64 {
 	length := a.Length()
 	if length == 0 {
@@ -297,6 +329,9 @@ func Stdev(a Series, params ...int) float64 {
 	}
 	return math.Sqrt(s / float64(length-ddof))
 }
+
+// Pearson returns the Pearson correlation coefficient between series a and b
+// over the most recent length values.
 func Pearson(a, b Series, length int) float64 {
 	if a.Length() < length {
 		length = a.Length()
@@ -313,9 +348,9 @@ func Pearson(a, b Series, length int) float64 {
 	return stat.Correlation(x, y, nil)
 }
 
-// similar to pandas.Series.corr() function.
-//
-// method could either be `types.Pearson`, `types.Spearman` or `types.Kendall`
+// Correlation returns the correlation coefficient between series a and b
+// over the most recent length bars. Default method is Pearson correlation.
+// Other methods can be specified using CorrFunc: Pearson, Spearman, or Kendall.
 func Correlation(a Series, b Series, length int, method ...CorrFunc) float64 {
 	var runner CorrFunc
 	if len(method) == 0 {
@@ -326,9 +361,9 @@ func Correlation(a Series, b Series, length int, method ...CorrFunc) float64 {
 	return runner(a, b, length)
 }
 
-// similar to pandas.Series.autocorr() function.
-//
-// The method computes the Pearson correlation between Series and shifted itself
+// AutoCorrelation returns the autocorrelation of the series at the specified lag.
+// It computes the Pearson correlation between the series and itself shifted by lag.
+// Default lag is 1.
 func AutoCorrelation(a Series, length int, lags ...int) float64 {
 	lag := 1
 	if len(lags) > 0 {
@@ -337,9 +372,8 @@ func AutoCorrelation(a Series, length int, lags ...int) float64 {
 	return Pearson(a, Shift(a, lag), length)
 }
 
-// similar to pandas.Series.cov() function with ddof=0
-//
-// Compute covariance with Series
+// Covariance returns the population covariance between series a and b
+// over the most recent length bars. Uses ddof=0.
 func Covariance(a Series, b Series, length int) float64 {
 	if a.Length() < length {
 		length = a.Length()
@@ -358,13 +392,15 @@ func Covariance(a Series, b Series, length int) float64 {
 	return sum
 }
 
+// Variance returns the population variance over the most recent length bars.
+// This is equivalent to Covariance(a, a, length).
 func Variance(a Series, length int) float64 {
 	return Covariance(a, a, length)
 }
 
-// similar to pandas.Series.skew() function.
-//
-// Return unbiased skew over input series
+// Skew returns the sample skewness over the most recent length bars.
+// Uses the unbiased estimator formula. Returns NaN if length is too small
+// (less than 3) or if variance is zero.
 func Skew(a Series, length int) float64 {
 	if length > a.Length() {
 		length = a.Length()
@@ -384,18 +420,22 @@ func Skew(a Series, length int) float64 {
 	return l * math.Sqrt(l-1) / (l - 2) * sum3 / math.Pow(sum2, 1.5)
 }
 
+// Shift returns a series shifted by the given offset.
+// Positive offset moves values into the past (discards recent values).
+// Negative offset brings future values into the present (filled with 0).
 func Shift(a Series, offset int) SeriesExtend {
 	return NewSeries(&ShiftResult{a, offset})
 }
 
+// Rolling groups the series into non-overlapping windows of the given size.
+// Returns a RollingResult which can be used to access each window.
 func Rolling(a Series, window int) *RollingResult {
 	return &RollingResult{a, window}
 }
 
-// Softmax returns the input value in the range of 0 to 1
-// with sum of all the probabilities being equal to one.
-// It is commonly used in machine learning neural networks.
-// Will return Softmax SeriesExtend result based in latest [window] numbers from [a] Series
+// Softmax computes the softmax activation over the most recent window values.
+// Returns a new series where each value is exp(x) / sum(exp(x)) for the window.
+// Output values are in the range (0, 1) and sum to 1.0.
 func Softmax(a Series, window int) SeriesExtend {
 	s := 0.0
 	max := Highest(a, window)
@@ -409,9 +449,8 @@ func Softmax(a Series, window int) SeriesExtend {
 	return out
 }
 
-// Entropy computes the Shannon entropy of a distribution or the distance between
-// two distributions. The natural logarithm is used.
-// - sum(v * ln(v))
+// Entropy computes the Shannon entropy of the distribution over the most recent
+// window values. Uses the natural logarithm. Zero values are ignored.
 func Entropy(a Series, window int) (e float64) {
 	for i := 0; i < window; i++ {
 		v := a.Last(i)
@@ -422,7 +461,9 @@ func Entropy(a Series, window int) (e float64) {
 	return e
 }
 
-// CrossEntropy computes the cross-entropy between the two distributions
+// CrossEntropy computes the cross-entropy between series a and series b
+// over the most recent window values. Both series should be probability
+// distributions (non-negative values). Uses the natural logarithm.
 func CrossEntropy(a, b Series, window int) (e float64) {
 	for i := 0; i < window; i++ {
 		v := a.Last(i)
@@ -433,6 +474,9 @@ func CrossEntropy(a, b Series, window int) (e float64) {
 	return e
 }
 
+// Kendall returns Kendall's tau correlation coefficient between series a and b
+// over the most recent length bars. This is a rank-based correlation measure
+// that counts concordant and discordant pairs.
 func Kendall(a, b Series, length int) float64 {
 	if a.Length() < length {
 		length = a.Length()
@@ -456,6 +500,9 @@ func Kendall(a, b Series, length int) float64 {
 	return float64(concordant-discordant) * 2.0 / float64(length*(length-1))
 }
 
+// Spearman returns Spearman's rank correlation coefficient between series a and b
+// over the most recent length bars. This is equivalent to the Pearson correlation
+// of the rank-transformed values.
 func Spearman(a, b Series, length int) float64 {
 	if a.Length() < length {
 		length = a.Length()
