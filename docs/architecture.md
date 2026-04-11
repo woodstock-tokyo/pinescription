@@ -128,5 +128,7 @@ The Provider interface decouples the compiler/runtime from specific data sources
 
 ## Examples
 
-- `examples/basic/main.go` — Minimal execution path
+- `examples/basic/main.go` — Minimal end-to-end execution path
 - `examples/volume_profile_pivot_anchored/` — Complex Pine v6 script with alerts
+- `example_engine_test.go` — runnable pkg.go.dev examples for `NewEngine` and `ExecuteWithRuntime`
+- `series/examples_test.go` — runnable pkg.go.dev examples for queue, mean, and crossover behavior

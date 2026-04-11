@@ -6,11 +6,25 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # API Reference
 
-This document provides a complete API reference for the Pinescription Pine Script v6 compiler and runtime. Pinescription is distributed as the Go package `github.com/woodstock-tokyo/pinescription`, typically imported as `pinego`.
+This document describes the public Go API for the Pinescription Pine Script v6 compiler and runtime. Pinescription is distributed as the Go package `github.com/woodstock-tokyo/pinescription`, typically imported as `pinego`.
+
+The recommended integration style is:
+
+1. Create an isolated `Engine` with `NewEngine()`
+2. Register one or more `Provider` implementations
+3. Compile Pine Script source with `Engine.Compile`
+4. Execute bytecode with `Engine.Execute` or `Engine.ExecuteWithRuntime`
+
+For runnable consumer-oriented examples, see the pkg.go.dev example tests in:
+
+- `example_engine_test.go` (`ExampleNewEngine`, `ExampleEngine_ExecuteWithRuntime`)
+- `series/examples_test.go` (`ExampleNewQueue`, `ExampleSeriesExtend_Mean`, `ExampleCrossOver`)
 
 ## Package-Level Functions (Default Engine)
 
 The package provides a default engine instance for quick usage without explicitly creating an engine. These functions operate on shared global state and are suitable for simple applications or testing.
+
+For reusable applications, services, or tests that should not share state, prefer `NewEngine()` instead of the package-level helpers.
 
 ### Compile
 
@@ -108,6 +122,28 @@ Sets the start time for the execution window. This determines the beginning of t
 
 **Parameters:**
 - `start`: A `time.Time` value representing the start time.
+
+## Recommended Engine Workflow
+
+The instance-based `Engine` API is the primary integration surface:
+
+```go
+engine := pinego.NewEngine()
+engine.RegisterMarketDataProvider(&myProvider{})
+engine.SetDefaultSymbol("AAPL")
+
+bytecode, err := engine.Compile("close + 1")
+if err != nil {
+    // handle compile error
+}
+
+result, err := engine.Execute(bytecode)
+if err != nil {
+    // handle execution error
+}
+```
+
+If you need post-execution inspection, use `Engine.ExecuteWithRuntime()` instead and read the returned `Runtime`.
 
 ## Engine Type
 
@@ -237,6 +273,70 @@ Sets the trading session. This propagates to all registered providers.
 **Parameters:**
 - `session`: The session string.
 
+### Engine.Timeframe
+
+```go
+func (e *Engine) Timeframe() string
+```
+
+Returns the currently configured timeframe string for this engine.
+
+### Engine.Session
+
+```go
+func (e *Engine) Session() string
+```
+
+Returns the currently configured session string for this engine.
+
+### Engine.SetCurrentTime
+
+```go
+func (e *Engine) SetCurrentTime(now time.Time)
+```
+
+Sets the current wall-clock time used during execution. This is most useful for deterministic tests or replaying historical execution with a fixed "now".
+
+### Engine.CurrentTime
+
+```go
+func (e *Engine) CurrentTime() time.Time
+```
+
+Returns the currently configured execution time.
+
+### Engine.SetStartTime
+
+```go
+func (e *Engine) SetStartTime(start time.Time)
+```
+
+Sets the timestamp of the first bar in the execution window. The runtime combines this with timeframe information to derive per-bar timestamps.
+
+### Engine.StartTime
+
+```go
+func (e *Engine) StartTime() time.Time
+```
+
+Returns the configured start time.
+
+### Engine.Logs
+
+```go
+func (e *Engine) Logs() []EngineLogEntry
+```
+
+Returns a copy of execution log entries collected by the engine during the last run.
+
+### Engine.ClearLogs
+
+```go
+func (e *Engine) ClearLogs()
+```
+
+Clears any retained engine log entries.
+
 ### Engine.SetAlertSink
 
 ```go
@@ -310,7 +410,7 @@ type Provider interface {
 ### GetSeries
 
 ```go
-func (p *Provider) GetSeries(seriesKey string) (SeriesExtended, error)
+GetSeries(seriesKey string) (SeriesExtended, error)
 ```
 
 Retrieves a time series for the given key. The `seriesKey` format is `symbol + "|" + value_type`, for example `"AAPL|close"`, `"GOOGL|volume"`, or `"MSFT|high"`.
@@ -325,7 +425,7 @@ Retrieves a time series for the given key. The `seriesKey` format is `symbol + "
 ### GetSymbols
 
 ```go
-func (p Provider) GetSymbols() ([]string, error)
+GetSymbols() ([]string, error)
 ```
 
 Returns all symbols available from this provider.
@@ -337,7 +437,7 @@ Returns all symbols available from this provider.
 ### GetValuesTypes
 
 ```go
-func (p Provider) GetValuesTypes() ([]string, error)
+GetValuesTypes() ([]string, error)
 ```
 
 Returns all value types available from this provider for the set of symbols it provides.
@@ -349,7 +449,7 @@ Returns all value types available from this provider for the set of symbols it p
 ### SetTimeframe
 
 ```go
-func (p Provider) SetTimeframe(timeframe string) error
+SetTimeframe(timeframe string) error
 ```
 
 Sets the timeframe on the provider. Called by the engine before execution.
@@ -363,7 +463,7 @@ Sets the timeframe on the provider. Called by the engine before execution.
 ### GetTimeframe
 
 ```go
-func (p Provider) GetTimeframe() string
+GetTimeframe() string
 ```
 
 Returns the current timeframe from the provider.
@@ -374,7 +474,7 @@ Returns the current timeframe from the provider.
 ### SetSession
 
 ```go
-func (p Provider) SetSession(session string) error
+SetSession(session string) error
 ```
 
 Sets the trading session on the provider.
@@ -388,7 +488,7 @@ Sets the trading session on the provider.
 ### GetSession
 
 ```go
-func (p Provider) GetSession() string
+GetSession() string
 ```
 
 Returns the current session from the provider.
@@ -415,6 +515,14 @@ The engine supports registering multiple providers simultaneously. When multiple
 ## Runtime State Holder API
 
 The `Runtime` type holds the state from a single script execution. It is returned by `Engine.ExecuteWithRuntime()` and is also accessible via `Engine.Runtime()` after execution.
+
+### Runtime.SetBarIndex
+
+```go
+func (r *Runtime) SetBarIndex(i int)
+```
+
+Advances the runtime to a specific bar index and refreshes cached bar-state values. This is called automatically by the engine during execution, but it is also exported for step-through inspection and replay-style tooling.
 
 ### Runtime.Snapshot
 
@@ -527,6 +635,30 @@ type AlertEvent struct {
 
 The `AlertEvent` struct contains the details of a triggered alert.
 
+## Engine Logs
+
+In addition to returning values and runtime state, an `Engine` also retains structured log entries from the most recent execution. Use `Engine.Logs()` to retrieve them and `Engine.ClearLogs()` to clear them before or after a run.
+
+```go
+type EngineLogEntry struct {
+    Timestamp time.Time
+    Level     string
+    Message   string
+}
+```
+
+`Level` is one of `"info"`, `"warning"`, or `"error"`.
+
+## Runnable Examples
+
+The following runnable examples are part of the test suite and are rendered by pkg.go.dev:
+
+- `ExampleNewEngine` — create an engine, register a provider, compile, and execute
+- `ExampleEngine_ExecuteWithRuntime` — inspect the returned runtime snapshot
+- `ExampleNewQueue` — show queue indexing and fixed-size buffer behavior
+- `ExampleSeriesExtend_Mean` — compute means from `series.SeriesExtend`
+- `ExampleCrossOver` — demonstrate crossover detection in the `series` package
+
 ### Setting Up Alert Handling
 
 To receive alerts, register a callback with the engine:
@@ -598,4 +730,4 @@ ma + ex
 }
 ```
 
-This example shows the typical workflow: create an engine, configure it with providers and settings, compile your script, execute it with runtime inspection, and then access the computed results and runtime state.
+This example shows the typical workflow: create an engine, configure it with providers and settings, compile your script, execute it with runtime inspection, and then access the computed results and runtime state. For shorter, verified examples that run under `go test`, see the pkg.go.dev example tests listed above.
