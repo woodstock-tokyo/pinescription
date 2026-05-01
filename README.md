@@ -154,7 +154,7 @@ Common series keys include `AAPL|close`, `AAPL|volume`, etc.
 - Strategy APIs (`strategy.entry`, `strategy.exit`...)
 - Plot APIs (`plot`, `plotshape`...)
 
-These return explicit runtime errors when used.
+These return explicit runtime errors when used unless you register an exact-name custom function hook such as `RegisterFunction("strategy.order", fn)`.
 
 ---
 

@@ -62,7 +62,7 @@ Executes pre-compiled bytecode and returns the final value. This is a convenienc
 func RegisterFunction(name string, function func(args ...interface{}) (interface{}, error))
 ```
 
-Registers a custom callable function that can be invoked from within Pine Script. The function receives arguments as `interface{}` and must return an `interface{}` and error.
+Registers a custom callable function that can be invoked from within Pine Script. The function receives arguments as `interface{}` and must return an `interface{}` and error. Namespaced Pine calls use exact names, so registering `strategy.order` makes `strategy.order(...)` callable even though unregistered strategy APIs remain unsupported.
 
 **Parameters:**
 - `name`: The name by which the function is callable in Pine Script.
@@ -212,7 +212,7 @@ Executes bytecode and returns the runtime for post-execution inspection. This me
 func (e *Engine) RegisterFunction(name string, fn UserFunction)
 ```
 
-Registers a custom callable function with this engine. The function must implement `UserFunction`, which is defined as `func(args ...interface{}) (interface{}, error)`.
+Registers a custom callable function with this engine. The function must implement `UserFunction`, which is defined as `func(args ...interface{}) (interface{}, error)`. Namespaced Pine calls use exact names, so registering `strategy.order` makes `strategy.order(...)` callable even though unregistered strategy APIs remain unsupported.
 
 **Parameters:**
 - `name`: The function name callable from Pine Script.

@@ -328,11 +328,11 @@ These functions are available for script compatibility but perform no actual ren
 
 ## Unsupported Features
 
-The following Pine Script features are not implemented in Pinescription. Attempting to use them will produce a runtime error: `unsupported feature: ...`
+The following Pine Script features are not implemented in Pinescription. Attempting to use them without a registered custom function hook will produce a runtime error: `unsupported feature: ...`
 
 ### Strategy APIs
 
-All `strategy.*` functions return an unsupported feature error:
+All unregistered `strategy.*` functions return an unsupported feature error:
 
 - `strategy.entry`, `strategy.exit`, `strategy.order`
 - `strategy.position`, `strategy.closedtrades`, `strategy.opentrades`
@@ -340,7 +340,7 @@ All `strategy.*` functions return an unsupported feature error:
 
 ### Plot APIs
 
-All plotting functions return an unsupported feature error:
+All unregistered plotting functions return an unsupported feature error:
 
 - `plot`, `plotshape`, `plotchar`, `plotbar`, `plotcandle`
 - `plotarrow`, `fill` 

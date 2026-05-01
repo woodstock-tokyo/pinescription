@@ -5,6 +5,7 @@
 package pinescription
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -635,10 +636,103 @@ func TestRegisterUserFunction(t *testing.T) {
 	}
 }
 
+func TestRegisterFunctionCallableFromInputPineScript(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 10, 20, 30))
+	e.SetDefaultSymbol("TEST")
+
+	calls := 0
+	var lastArgs []float64
+	e.RegisterFunction("strategy.order", func(args ...any) (any, error) {
+		calls++
+		if len(args) != 2 {
+			return nil, fmt.Errorf("strategy.order expected 2 args, got %d", len(args))
+		}
+		base, ok := toFloat(args[0])
+		if !ok {
+			return nil, fmt.Errorf("strategy.order first arg is not numeric: %T", args[0])
+		}
+		offset, ok := toFloat(args[1])
+		if !ok {
+			return nil, fmt.Errorf("strategy.order second arg is not numeric: %T", args[1])
+		}
+		lastArgs = []float64{base, offset}
+		return base + offset + 5, nil
+	})
+
+	b, err := e.Compile(`
+base = close + 2
+strategy.order(base, 7)
+`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	v, err := e.Execute(b)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if calls == 0 {
+		t.Fatalf("expected registered function to be called from PineScript")
+	}
+	if len(lastArgs) != 2 || lastArgs[0] != 32 || lastArgs[1] != 7 {
+		t.Fatalf("expected final PineScript args [32 7], got %v", lastArgs)
+	}
+	if v.(float64) != 44 {
+		t.Fatalf("expected 44, got %v", v)
+	}
+}
+
+func TestRegisterDottedFunctionCallableWithNamedArgs(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 10, 20, 30))
+	e.SetDefaultSymbol("TEST")
+
+	calls := 0
+	var lastArgs []float64
+	e.RegisterFunction("request.security", func(args ...any) (any, error) {
+		calls++
+		if len(args) != 2 {
+			return nil, fmt.Errorf("request.security expected 2 args, got %d", len(args))
+		}
+		seriesValue, ok := toFloat(args[0])
+		if !ok {
+			return nil, fmt.Errorf("request.security first arg is not numeric: %T", args[0])
+		}
+		offset, ok := toFloat(args[1])
+		if !ok {
+			return nil, fmt.Errorf("request.security second arg is not numeric: %T", args[1])
+		}
+		lastArgs = []float64{seriesValue, offset}
+		return seriesValue + offset, nil
+	})
+
+	b, err := e.Compile(`
+base = close + 2
+request.security(source = base, offset = 7)
+`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	v, err := e.Execute(b)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if calls == 0 {
+		t.Fatalf("expected registered dotted function to be called from PineScript")
+	}
+	if len(lastArgs) != 2 || lastArgs[0] != 32 || lastArgs[1] != 7 {
+		t.Fatalf("expected final PineScript args [32 7], got %v", lastArgs)
+	}
+	if v.(float64) != 39 {
+		t.Fatalf("expected 39, got %v", v)
+	}
+}
+
 func TestUnsupportedFeatures(t *testing.T) {
 	tests := []string{
 		"strategy.entry(\"L\", strategy.long)",
 		"plot(close)",
+		"request.security(\"TEST\", \"D\", close)",
 	}
 	for _, script := range tests {
 		e := NewEngine()

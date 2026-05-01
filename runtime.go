@@ -1453,8 +1453,18 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 		return nil, errors.New("call target must be identifier")
 	}
 	name := expr.Left.Name
-	if strings.HasPrefix(name, "strategy.") || strings.HasPrefix(name, "plot") {
+	if isUnsupportedFeatureCallName(name) {
+		if v, ok, err := r.callRegisteredFunction(name, expr.Args); ok || err != nil {
+			return v, err
+		}
 		return nil, fmt.Errorf("unsupported feature: %s", name)
+	}
+	if callHasNamedArgs(expr.Args) {
+		if _, hasSpec := r.callParamSpec(name); !hasSpec {
+			if v, ok, err := r.callRegisteredFunction(name, expr.Args); ok || err != nil {
+				return v, err
+			}
+		}
 	}
 
 	useArgPool := !disableCallArgPooling
@@ -1487,12 +1497,7 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 		return result, err
 	}
 	if userFn, ok := r.userFns[name]; ok {
-		if useArgPool {
-			copied := append([]interface{}(nil), args...)
-			return userFn(copied...)
-		}
-		result, err := userFn(args...)
-		return result, err
+		return r.invokeRegisteredFunction(userFn, args, useArgPool)
 	}
 	if recvName, methodName, ok := splitMethodCallName(name); ok {
 		recv, err := r.resolve(recvName)
@@ -1521,7 +1526,81 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 			}
 		}
 	}
+	if strings.Contains(name, ".") {
+		return nil, fmt.Errorf("unsupported feature: %s", name)
+	}
 	return nil, fmt.Errorf("unknown function: %s", name)
+}
+
+func isUnsupportedFeatureCallName(name string) bool {
+	return strings.HasPrefix(name, "strategy.") || strings.HasPrefix(name, "plot")
+}
+
+func (r *Runtime) callRegisteredFunction(name string, argExprs []*Expr) (interface{}, bool, error) {
+	userFn, ok := r.userFns[name]
+	if !ok {
+		return nil, false, nil
+	}
+	useArgPool := !disableCallArgPooling
+	if len(argExprs) <= 4 {
+		useArgPool = false
+	}
+	_, args, releaseArgs, err := r.prepareRegisteredCallArgs(name, argExprs, useArgPool)
+	if err != nil {
+		return nil, true, err
+	}
+	defer releaseArgs()
+	result, err := r.invokeRegisteredFunction(userFn, args, useArgPool)
+	return result, true, err
+}
+
+func (r *Runtime) invokeRegisteredFunction(userFn UserFunction, args []interface{}, useArgPool bool) (interface{}, error) {
+	if useArgPool {
+		copied := append([]interface{}(nil), args...)
+		return userFn(copied...)
+	}
+	return userFn(args...)
+}
+
+func (r *Runtime) prepareRegisteredCallArgs(name string, argExprs []*Expr, useArgPool bool) ([]*Expr, []interface{}, func(), error) {
+	if !callHasNamedArgs(argExprs) {
+		return r.prepareCallArgs(name, argExprs, useArgPool)
+	}
+	if _, ok := r.callParamSpec(name); ok {
+		return r.prepareCallArgs(name, argExprs, useArgPool)
+	}
+
+	var args []interface{}
+	var smallArgs [4]interface{}
+	if useArgPool {
+		args = acquireInterfaceSlice(len(argExprs))
+	} else if len(argExprs) <= len(smallArgs) {
+		args = smallArgs[:0]
+	} else {
+		args = make([]interface{}, 0, len(argExprs))
+	}
+	release := func() {
+		if useArgPool {
+			releaseInterfaceSlice(args)
+		}
+	}
+	for _, argExpr := range argExprs {
+		valueExpr := argExpr
+		if argExpr != nil && argExpr.Kind == "named_arg" {
+			valueExpr = argExpr.NamedArgValue()
+		}
+		if valueExpr == nil {
+			args = append(args, nil)
+			continue
+		}
+		v, err := r.eval(valueExpr)
+		if err != nil {
+			release()
+			return nil, nil, nil, err
+		}
+		args = append(args, v)
+	}
+	return argExprs, args, release, nil
 }
 
 func (r *Runtime) prepareCallArgs(name string, argExprs []*Expr, useArgPool bool) ([]*Expr, []interface{}, func(), error) {
