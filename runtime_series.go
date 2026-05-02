@@ -177,7 +177,7 @@ func (r *Runtime) Series(seriesKey string) (SeriesExtended, bool) {
 	if !ok {
 		return nil, false
 	}
-	ser, err := r.getSeries(symbol, valueType)
+	ser, err := r.getSeriesByIdentifier(symbol, valueType)
 	if err != nil {
 		return nil, false
 	}

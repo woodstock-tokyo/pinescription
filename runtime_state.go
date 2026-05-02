@@ -892,7 +892,10 @@ func (r *Runtime) builtinTimestamp(args []interface{}) (interface{}, bool, error
 	}
 	vals := []int{0, 0, 0, 0, 0, 0}
 	for i := 0; i < len(args)-pos; i++ {
-		f, _ := toFloat(args[pos+i])
+		f, ok := toFloat(args[pos+i])
+		if !ok {
+			return nil, true, fmt.Errorf("timestamp arg %d is not a number", pos+i+1)
+		}
 		vals[i] = int(f)
 	}
 	ts := time.Date(vals[0], time.Month(vals[1]), vals[2], vals[3], vals[4], vals[5], 0, loc)
