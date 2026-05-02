@@ -689,7 +689,7 @@ func TestRegisterDottedFunctionCallableWithNamedArgs(t *testing.T) {
 
 	calls := 0
 	var lastArgs []float64
-	e.RegisterFunction("request.security", func(args ...any) (any, error) {
+	e.RegisterFunctionWithParamNames("request.security", []string{"source", "offset"}, func(args ...any) (any, error) {
 		calls++
 		if len(args) != 2 {
 			return nil, fmt.Errorf("request.security expected 2 args, got %d", len(args))
@@ -708,7 +708,7 @@ func TestRegisterDottedFunctionCallableWithNamedArgs(t *testing.T) {
 
 	b, err := e.Compile(`
 base = close + 2
-request.security(source = base, offset = 7)
+request.security(offset = 7, source = base)
 `)
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
@@ -725,6 +725,27 @@ request.security(source = base, offset = 7)
 	}
 	if v.(float64) != 39 {
 		t.Fatalf("expected 39, got %v", v)
+	}
+}
+
+func TestRegisteredFunctionNamedArgsRequireParamNames(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 10, 20, 30))
+	e.SetDefaultSymbol("TEST")
+	e.RegisterFunction("request.security", func(args ...any) (any, error) {
+		return nil, fmt.Errorf("registered hook should not receive silently misbound named args: %v", args)
+	})
+
+	b, err := e.Compile(`
+base = close + 2
+request.security(offset = 7, source = base)
+`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	_, err = e.Execute(b)
+	if err == nil || !strings.Contains(err.Error(), "named arguments are not supported for registered function request.security without parameter metadata") {
+		t.Fatalf("expected missing parameter metadata error, got %v", err)
 	}
 }
 
@@ -746,6 +767,30 @@ func TestUnsupportedFeatures(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "unsupported feature") {
 			t.Fatalf("expected unsupported feature error for %q, got %v", script, err)
 		}
+	}
+}
+
+func TestUnknownMethodErrorNotUnsupportedFeature(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 1, 2, 3))
+	e.SetDefaultSymbol("TEST")
+
+	b, err := e.Compile(`
+var myArr = array.new_int(0)
+myArr.noSuchMethod()
+`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	_, err = e.Execute(b)
+	if err == nil {
+		t.Fatalf("expected unknown method error")
+	}
+	if strings.Contains(err.Error(), "unsupported feature") {
+		t.Fatalf("expected unknown method error, got unsupported feature: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unknown method") {
+		t.Fatalf("expected unknown method error, got %v", err)
 	}
 }
 

@@ -106,6 +106,7 @@ type EngineLogEntry struct {
 type Engine struct {
 	providers        []Provider
 	functions        map[string]UserFunction
+	functionParams   map[string]callParamSpec
 	defaultSymbol    string
 	defaultValueType string
 	timeframe        string
@@ -146,7 +147,7 @@ type providerCatalog struct {
 //	engine := pinescription.NewEngine()
 //	engine.RegisterMarketDataProvider(myProvider)
 func NewEngine() *Engine {
-	return &Engine{functions: map[string]UserFunction{}}
+	return &Engine{functions: map[string]UserFunction{}, functionParams: map[string]callParamSpec{}}
 }
 
 // RegisterFunction registers a user-defined function callable from Pine Script.
@@ -154,7 +155,26 @@ func NewEngine() *Engine {
 // are invoked with positional arguments evaluated according to Pine Script rules.
 // A function with the same name replaces any previously registered function.
 func (e *Engine) RegisterFunction(name string, function UserFunction) {
+	if e.functions == nil {
+		e.functions = map[string]UserFunction{}
+	}
 	e.functions[name] = function
+	delete(e.functionParams, name)
+}
+
+// RegisterFunctionWithParamNames registers a user-defined function with
+// parameter names used to bind Pine Script named arguments. Positional calls are
+// still passed through in source order. A function with the same name replaces
+// any previously registered function and parameter metadata.
+func (e *Engine) RegisterFunctionWithParamNames(name string, paramNames []string, function UserFunction) {
+	if e.functions == nil {
+		e.functions = map[string]UserFunction{}
+	}
+	if e.functionParams == nil {
+		e.functionParams = map[string]callParamSpec{}
+	}
+	e.functions[name] = function
+	e.functionParams[name] = callParamSpec{Names: append([]string(nil), paramNames...)}
 }
 
 // RegisterMarketDataProvider adds a market data provider to the engine.
@@ -431,6 +451,17 @@ func copyUserFunctions(in map[string]UserFunction) map[string]UserFunction {
 	return out
 }
 
+func copyCallParamSpecs(in map[string]callParamSpec) map[string]callParamSpec {
+	if len(in) == 0 {
+		return nil
+	}
+	out := map[string]callParamSpec{}
+	for k, v := range in {
+		out[k] = callParamSpec{Names: append([]string(nil), v.Names...), Required: v.Required}
+	}
+	return out
+}
+
 func collectNeededSeriesKeys(program Program, activeSymbol, activeValueType string) map[string]struct{} {
 	needed := map[string]struct{}{}
 	needed[makeSeriesKey(activeSymbol, activeValueType)] = struct{}{}
@@ -461,6 +492,12 @@ var defaultEngine = NewEngine()
 // functions that should be isolated between different uses.
 func RegisterFunction(name string, function func(args ...interface{}) (interface{}, error)) {
 	defaultEngine.RegisterFunction(name, function)
+}
+
+// RegisterFunctionWithParamNames is a convenience wrapper around
+// defaultEngine.RegisterFunctionWithParamNames.
+func RegisterFunctionWithParamNames(name string, paramNames []string, function func(args ...interface{}) (interface{}, error)) {
+	defaultEngine.RegisterFunctionWithParamNames(name, paramNames, function)
 }
 
 // RegisterMarketDataProvider is a convenience wrapper around defaultEngine.RegisterMarketDataProvider.
@@ -597,6 +634,7 @@ func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, err
 	}
 
 	functions := copyUserFunctions(e.functions)
+	functionParams := copyCallParamSpecs(e.functionParams)
 
 	catalog, err := buildProviderCatalog(e.providers)
 	if err != nil {
@@ -625,6 +663,7 @@ func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, err
 	seriesByKey := map[string]SeriesExtended{}
 	seriesByKey[makeSeriesKey(activeSymbol, activeValueType)] = baseSeries
 	rt := newRuntime(program, functions, seriesByKey, catalog.valueTypesBySymbol, activeSymbol, activeValueType, timeframe, session, currentTime, startTime, baseSeries.Length(), catalog.fetchSeries, e.appendLog, e.alertSink)
+	rt.userFnParamSpecs = functionParams
 	for key := range neededKeys {
 		symbol, valueType, ok := splitSeriesKey(key)
 		if !ok {

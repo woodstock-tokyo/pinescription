@@ -106,8 +106,9 @@ type RuntimeSnapshot struct {
 // produced by Engine.ExecuteWithRuntime and must not be mutated by callers. After
 // a Runtime is no longer needed, call Release to return pooled memory.
 type Runtime struct {
-	program Program
-	userFns map[string]UserFunction
+	program          Program
+	userFns          map[string]UserFunction
+	userFnParamSpecs map[string]callParamSpec
 
 	rootNamespaces map[string]interface{}
 
@@ -235,6 +236,7 @@ func (r *Runtime) Release() {
 	}
 	r.program = Program{}
 	r.userFns = nil
+	r.userFnParamSpecs = nil
 	r.rootNamespaces = nil
 	r.seriesByKey = nil
 	r.namedSeries = nil
@@ -1460,7 +1462,7 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 		return nil, fmt.Errorf("unsupported feature: %s", name)
 	}
 	if callHasNamedArgs(expr.Args) {
-		if _, hasSpec := r.callParamSpec(name); !hasSpec {
+		if !r.hasCallParamSpec(name) {
 			if v, ok, err := r.callRegisteredFunction(name, expr.Args); ok || err != nil {
 				return v, err
 			}
@@ -1524,16 +1526,14 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 				result, err := userFn(methodArgs...)
 				return result, err
 			}
+			return nil, fmt.Errorf("unknown method: %s", name)
 		}
-	}
-	if strings.Contains(name, ".") {
-		return nil, fmt.Errorf("unsupported feature: %s", name)
 	}
 	return nil, fmt.Errorf("unknown function: %s", name)
 }
 
 func isUnsupportedFeatureCallName(name string) bool {
-	return strings.HasPrefix(name, "strategy.") || strings.HasPrefix(name, "plot")
+	return strings.HasPrefix(name, "strategy.") || strings.HasPrefix(name, "request.") || strings.HasPrefix(name, "plot")
 }
 
 func (r *Runtime) callRegisteredFunction(name string, argExprs []*Expr) (interface{}, bool, error) {
@@ -1566,41 +1566,10 @@ func (r *Runtime) prepareRegisteredCallArgs(name string, argExprs []*Expr, useAr
 	if !callHasNamedArgs(argExprs) {
 		return r.prepareCallArgs(name, argExprs, useArgPool)
 	}
-	if _, ok := r.callParamSpec(name); ok {
+	if r.hasCallParamSpec(name) {
 		return r.prepareCallArgs(name, argExprs, useArgPool)
 	}
-
-	var args []interface{}
-	var smallArgs [4]interface{}
-	if useArgPool {
-		args = acquireInterfaceSlice(len(argExprs))
-	} else if len(argExprs) <= len(smallArgs) {
-		args = smallArgs[:0]
-	} else {
-		args = make([]interface{}, 0, len(argExprs))
-	}
-	release := func() {
-		if useArgPool {
-			releaseInterfaceSlice(args)
-		}
-	}
-	for _, argExpr := range argExprs {
-		valueExpr := argExpr
-		if argExpr != nil && argExpr.Kind == "named_arg" {
-			valueExpr = argExpr.NamedArgValue()
-		}
-		if valueExpr == nil {
-			args = append(args, nil)
-			continue
-		}
-		v, err := r.eval(valueExpr)
-		if err != nil {
-			release()
-			return nil, nil, nil, err
-		}
-		args = append(args, v)
-	}
-	return argExprs, args, release, nil
+	return nil, nil, nil, fmt.Errorf("named arguments are not supported for registered function %s without parameter metadata", name)
 }
 
 func (r *Runtime) prepareCallArgs(name string, argExprs []*Expr, useArgPool bool) ([]*Expr, []interface{}, func(), error) {
@@ -1723,8 +1692,11 @@ func bindNamedCallArgs(name string, argExprs []*Expr, spec callParamSpec) ([]*Ex
 }
 
 func (r *Runtime) callParamSpec(name string) (callParamSpec, bool) {
+	if spec, ok := r.userFnParamSpecs[name]; ok {
+		return spec, true
+	}
 	if fn, ok := r.program.Functions[name]; ok {
-		return callParamSpec{Names: append([]string(nil), fn.Params...)}, true
+		return callParamSpec{Names: fn.Params}, true
 	}
 	if typeName, ok := splitTypeConstructorCallName(name); ok {
 		if typeDef, exists := r.program.Types[typeName]; exists {
@@ -1737,6 +1709,21 @@ func (r *Runtime) callParamSpec(name string) (callParamSpec, bool) {
 	}
 	spec, ok := builtinCallParamSpecs[name]
 	return spec, ok
+}
+
+func (r *Runtime) hasCallParamSpec(name string) bool {
+	if _, ok := r.userFnParamSpecs[name]; ok {
+		return true
+	}
+	if _, ok := r.program.Functions[name]; ok {
+		return true
+	}
+	if typeName, ok := splitTypeConstructorCallName(name); ok {
+		_, exists := r.program.Types[typeName]
+		return exists
+	}
+	_, ok := builtinCallParamSpecs[name]
+	return ok
 }
 
 func splitMethodCallName(name string) (string, string, bool) {
