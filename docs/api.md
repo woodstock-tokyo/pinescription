@@ -80,15 +80,15 @@ Registers a custom callable function on the package-level default engine and rec
 
 This is required for registered functions that may be called with named arguments. Without parameter metadata, a named-argument call to a registered function fails at runtime instead of silently forwarding values in source order.
 
-The function name must be an external hook point rather than a Pine language or built-in name. Registration returns an error when `name` is empty, parser-reserved, a type keyword, or an already implemented built-in function such as `ta.rsi`.
+The function name must be an external hook point rather than a Pine language or built-in name. Registration returns an error when `name` is empty, parser-reserved, a type keyword, or an already implemented built-in function such as `ta.rsi`. Each entry in `paramNames` must be non-empty and unique.
 
 **Parameters:**
 - `name`: The exact Pine Script function name to hook, including namespace when applicable (for example, `request.security`).
-- `paramNames`: Parameter names in the order expected by the Go function.
+- `paramNames`: Parameter names in the order expected by the Go function. Names must be non-empty and unique.
 - `function`: A function matching the signature `func(args ...interface{}) (interface{}, error)`.
 
 **Returns:**
-- `error`: Validation error for invalid/reserved/built-in names, or nil on success.
+- `error`: Validation error for invalid/reserved/built-in function names or invalid parameter names, or nil on success.
 
 ### RegisterMarketDataProvider
 
@@ -252,17 +252,17 @@ Registers a custom callable function with this engine and records parameter name
 
 Use this for external hook points such as `request.security` when scripts may call them with named arguments. The runtime treats unregistered `request.*`, `strategy.*`, and plotting calls as unsupported features; an exact-name hook makes only that registered call executable.
 
-Registration validates `name` and returns an error when it is empty, parser-reserved, a Pine type keyword, or an implemented built-in function. For example, registering `request.security` is allowed, while `ta.rsi`, `rsi`, `if`, `for`, and `plot` are rejected.
+Registration validates `name` and returns an error when it is empty, parser-reserved, a Pine type keyword, or an implemented built-in function. For example, registering `request.security` is allowed, while `ta.rsi`, `rsi`, `if`, `for`, and `plot` are rejected. Each entry in `paramNames` must also be non-empty and unique so named-argument binding is unambiguous.
 
 Calling `Engine.RegisterFunction` later with the same `name` replaces the function and clears the parameter metadata.
 
 **Parameters:**
 - `name`: The exact Pine Script function name to hook, including namespace when applicable.
-- `paramNames`: Parameter names in the order expected by `fn`.
+- `paramNames`: Parameter names in the order expected by `fn`. Names must be non-empty and unique.
 - `fn`: The function implementation.
 
 **Returns:**
-- `error`: Validation error for invalid/reserved/built-in names, or nil on success.
+- `error`: Validation error for invalid/reserved/built-in function names or invalid parameter names, or nil on success.
 
 ### Engine.RegisterMarketDataProvider
 

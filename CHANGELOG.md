@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - Allow exact-name registered custom functions to handle namespaced Pine calls such as `strategy.order(...)` before unsupported-feature checks run.
+- Validate `RegisterFunctionWithParamNames` parameter metadata so empty or duplicate parameter names are rejected before they can make named-argument binding ambiguous.
 
 ### Tests
 

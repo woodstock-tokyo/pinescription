@@ -755,6 +755,28 @@ func TestRegisterFunctionWithParamNamesRejectsReservedAndBuiltinNames(t *testing
 	}
 }
 
+func TestRegisterFunctionWithParamNamesRejectsInvalidParamNames(t *testing.T) {
+	e := NewEngine()
+	fn := func(args ...any) (any, error) { return nil, nil }
+
+	tests := []struct {
+		name       string
+		paramNames []string
+		want       string
+	}{
+		{name: "empty", paramNames: []string{"source", ""}, want: "parameter name at index 1 must not be empty"},
+		{name: "duplicate", paramNames: []string{"source", "offset", "source"}, want: "parameter name \"source\" is duplicated"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := e.RegisterFunctionWithParamNames("request.security", tc.paramNames, fn)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestRegisteredFunctionNamedArgsRequireParamNames(t *testing.T) {
 	e := NewEngine()
 	e.RegisterMarketDataProvider(providerWithClose("TEST", 10, 20, 30))

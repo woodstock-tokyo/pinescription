@@ -168,10 +168,14 @@ func (e *Engine) RegisterFunction(name string, function UserFunction) {
 // any previously registered function and parameter metadata.
 //
 // It returns an error when name is empty, parser-reserved, or already handled by
-// the built-in runtime dispatcher. Unsupported external hook points such as
-// request.security may still be registered.
+// the built-in runtime dispatcher, or when paramNames contains empty or duplicate
+// names. Unsupported external hook points such as request.security may still be
+// registered.
 func (e *Engine) RegisterFunctionWithParamNames(name string, paramNames []string, function UserFunction) error {
 	if err := validateRegisteredFunctionName(name); err != nil {
+		return err
+	}
+	if err := validateRegisteredFunctionParamNames(name, paramNames); err != nil {
 		return err
 	}
 	if e.functions == nil {
@@ -182,6 +186,20 @@ func (e *Engine) RegisterFunctionWithParamNames(name string, paramNames []string
 	}
 	e.functions[name] = function
 	e.functionParams[name] = callParamSpec{Names: append([]string(nil), paramNames...)}
+	return nil
+}
+
+func validateRegisteredFunctionParamNames(functionName string, paramNames []string) error {
+	seen := make(map[string]struct{}, len(paramNames))
+	for i, paramName := range paramNames {
+		if paramName == "" {
+			return fmt.Errorf("registered function %q parameter name at index %d must not be empty", functionName, i)
+		}
+		if _, ok := seen[paramName]; ok {
+			return fmt.Errorf("registered function %q parameter name %q is duplicated", functionName, paramName)
+		}
+		seen[paramName] = struct{}{}
+	}
 	return nil
 }
 
