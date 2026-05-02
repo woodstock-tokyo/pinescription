@@ -21,7 +21,7 @@ The distinction between Engine and Runtime is a key design concept in Pinescript
 | Role | Long-lived coordinator for compilation and execution | Per-execution evaluation state holder |
 | Lifetime | Reusable across multiple compile/execute calls | Created for a specific execution |
 | Owns | Providers, registered functions, defaults, logs, bytecode cache, retained runtime | Loaded series, active symbol/value type, bar index, variable environments, history, indicator state, last value |
-| Primary APIs | `Compile`, `Execute`, `ExecuteWithRuntime`, `RegisterMarketDataProvider`, `RegisterFunction` | `Snapshot`, `Series`, `SeriesKeys`, `Symbols`, `Value`, `ValueTypes`, `Release` |
+| Primary APIs | `Compile`, `Execute`, `ExecuteWithRuntime`, `RegisterMarketDataProvider`, `RegisterFunction`, `RegisterFunctionWithParamNames` | `Snapshot`, `Series`, `SeriesKeys`, `Symbols`, `Value`, `ValueTypes`, `Release` |
 | Responsibility | Resolve providers, derive execution context, construct runtime, drive bar-by-bar evaluation | Evaluate the program, maintain history, update indicators, expose execution state |
 | Retention | Keeps the latest runtime via `Engine.Runtime()` | Can be released with `Runtime.Release()` |
 

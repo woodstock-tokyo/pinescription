@@ -338,10 +338,19 @@ All unregistered `strategy.*` functions return an unsupported feature error:
 - `strategy.position`, `strategy.closedtrades`, `strategy.opentrades`
 - And all other strategy-related functions
 
+### Request APIs
+
+All unregistered `request.*` functions return an unsupported feature error:
+
+- `request.security`, `request.financial`, `request.earnings`
+- And all other request-related functions
+
+Exact-name custom function hooks can provide selected request behavior. Use `RegisterFunctionWithParamNames` when the Pine call may use named arguments, such as `request.security(symbol = ..., timeframe = ..., expression = ...)`.
+
 ### Plot APIs
 
 All unregistered plotting functions return an unsupported feature error:
 
 - `plot`, `plotshape`, `plotchar`, `plotbar`, `plotcandle`
-- `plotarrow`, `fill` 
+- `plotarrow`, `fill`
 - And all other visualization functions

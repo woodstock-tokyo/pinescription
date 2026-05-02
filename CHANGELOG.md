@@ -14,4 +14,5 @@ All notable changes to this project will be documented in this file.
 
 ### Documentation
 
-- Clarify that unsupported APIs such as `strategy.*` and plotting functions still raise runtime errors unless an exact-name custom function hook is registered.
+- Clarify that unsupported APIs such as `strategy.*`, `request.*`, and plotting functions still raise runtime errors unless an exact-name custom function hook is registered.
+- Document `RegisterFunctionWithParamNames` for registered functions that need Pine Script named-argument support.
