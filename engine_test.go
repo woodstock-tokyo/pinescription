@@ -980,6 +980,54 @@ func TestCompiledBytecodeReusableAcrossEnginesWithDifferentProviders(t *testing.
 	}
 }
 
+func TestCompiledBytecodeIndependentOfRegisteredFunctions(t *testing.T) {
+	script := `
+base = close + 2
+request.security(offset = 7, source = base) + custom.transform(close, 3)
+`
+
+	plain := NewEngine()
+	want, err := plain.Compile(script)
+	if err != nil {
+		t.Fatalf("plain compile failed: %v", err)
+	}
+
+	withTargetHooks := NewEngine()
+	err = withTargetHooks.RegisterFunctionWithParamNames("request.security", []string{"source", "offset"}, func(args ...any) (any, error) {
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatalf("register request.security failed: %v", err)
+	}
+	err = withTargetHooks.RegisterFunctionWithParamNames("custom.transform", []string{"source", "length"}, func(args ...any) (any, error) {
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatalf("register custom.transform failed: %v", err)
+	}
+	withTargetHooks.RegisterFunction("unrelated.alpha", func(args ...any) (any, error) { return nil, nil })
+
+	got, err := withTargetHooks.Compile(script)
+	if err != nil {
+		t.Fatalf("compile with target hooks failed: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("bytecode changed when registered functions were present")
+	}
+
+	withDifferentHooks := NewEngine()
+	withDifferentHooks.RegisterFunction("unrelated.beta", func(args ...any) (any, error) { return nil, nil })
+	withDifferentHooks.RegisterFunction("unrelated.gamma", func(args ...any) (any, error) { return nil, nil })
+
+	got, err = withDifferentHooks.Compile(script)
+	if err != nil {
+		t.Fatalf("compile with different hooks failed: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("bytecode changed when different registered functions were present")
+	}
+}
+
 func TestCompiledBytecodeReusableAfterProviderMutation(t *testing.T) {
 	e := NewEngine()
 	p := providerWithClose("AAA", 1, 2, 3)
