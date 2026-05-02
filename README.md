@@ -152,9 +152,10 @@ Common series keys include `AAPL|close`, `AAPL|volume`, etc.
 ## Unsupported in Open Source Version - Need Custom Function Hooks
 
 - Strategy APIs (`strategy.entry`, `strategy.exit`...)
+- Request APIs (`request.security`, `request.financial`...)
 - Plot APIs (`plot`, `plotshape`...)
 
-These return explicit runtime errors when used.
+These return explicit runtime errors when used unless you register an exact-name custom function hook such as `RegisterFunction("strategy.order", fn)` or `RegisterFunctionWithParamNames("request.security", []string{"symbol", "timeframe", "expression"}, fn)`.
 
 ---
 

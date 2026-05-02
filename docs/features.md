@@ -328,20 +328,29 @@ These functions are available for script compatibility but perform no actual ren
 
 ## Unsupported Features
 
-The following Pine Script features are not implemented in Pinescription. Attempting to use them will produce a runtime error: `unsupported feature: ...`
+The following Pine Script features are not implemented in Pinescription. Attempting to use them without a registered custom function hook will produce a runtime error: `unsupported feature: ...`
 
 ### Strategy APIs
 
-All `strategy.*` functions return an unsupported feature error:
+All unregistered `strategy.*` functions return an unsupported feature error:
 
 - `strategy.entry`, `strategy.exit`, `strategy.order`
 - `strategy.position`, `strategy.closedtrades`, `strategy.opentrades`
 - And all other strategy-related functions
 
+### Request APIs
+
+All unregistered `request.*` functions return an unsupported feature error:
+
+- `request.security`, `request.financial`, `request.earnings`
+- And all other request-related functions
+
+Exact-name custom function hooks can provide selected request behavior. Use `RegisterFunctionWithParamNames` when the Pine call may use named arguments, such as `request.security(symbol = ..., timeframe = ..., expression = ...)`.
+
 ### Plot APIs
 
-All plotting functions return an unsupported feature error:
+All unregistered plotting functions return an unsupported feature error:
 
 - `plot`, `plotshape`, `plotchar`, `plotbar`, `plotcandle`
-- `plotarrow`, `fill` 
+- `plotarrow`, `fill`
 - And all other visualization functions

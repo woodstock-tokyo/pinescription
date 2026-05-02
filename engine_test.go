@@ -5,6 +5,7 @@
 package pinescription
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -635,10 +636,173 @@ func TestRegisterUserFunction(t *testing.T) {
 	}
 }
 
+func TestRegisterFunctionCallableFromInputPineScript(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 10, 20, 30))
+	e.SetDefaultSymbol("TEST")
+
+	calls := 0
+	var lastArgs []float64
+	e.RegisterFunction("strategy.order", func(args ...any) (any, error) {
+		calls++
+		if len(args) != 2 {
+			return nil, fmt.Errorf("strategy.order expected 2 args, got %d", len(args))
+		}
+		base, ok := toFloat(args[0])
+		if !ok {
+			return nil, fmt.Errorf("strategy.order first arg is not numeric: %T", args[0])
+		}
+		offset, ok := toFloat(args[1])
+		if !ok {
+			return nil, fmt.Errorf("strategy.order second arg is not numeric: %T", args[1])
+		}
+		lastArgs = []float64{base, offset}
+		return base + offset + 5, nil
+	})
+
+	b, err := e.Compile(`
+base = close + 2
+strategy.order(base, 7)
+`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	v, err := e.Execute(b)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if calls == 0 {
+		t.Fatalf("expected registered function to be called from PineScript")
+	}
+	if len(lastArgs) != 2 || lastArgs[0] != 32 || lastArgs[1] != 7 {
+		t.Fatalf("expected final PineScript args [32 7], got %v", lastArgs)
+	}
+	if v.(float64) != 44 {
+		t.Fatalf("expected 44, got %v", v)
+	}
+}
+
+func TestRegisterDottedFunctionCallableWithNamedArgs(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 10, 20, 30))
+	e.SetDefaultSymbol("TEST")
+
+	calls := 0
+	var lastArgs []float64
+	err := e.RegisterFunctionWithParamNames("request.security", []string{"source", "offset"}, func(args ...any) (any, error) {
+		calls++
+		if len(args) != 2 {
+			return nil, fmt.Errorf("request.security expected 2 args, got %d", len(args))
+		}
+		seriesValue, ok := toFloat(args[0])
+		if !ok {
+			return nil, fmt.Errorf("request.security first arg is not numeric: %T", args[0])
+		}
+		offset, ok := toFloat(args[1])
+		if !ok {
+			return nil, fmt.Errorf("request.security second arg is not numeric: %T", args[1])
+		}
+		lastArgs = []float64{seriesValue, offset}
+		return seriesValue + offset, nil
+	})
+	if err != nil {
+		t.Fatalf("register request.security failed: %v", err)
+	}
+
+	b, err := e.Compile(`
+base = close + 2
+request.security(offset = 7, source = base)
+`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	v, err := e.Execute(b)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if calls == 0 {
+		t.Fatalf("expected registered dotted function to be called from PineScript")
+	}
+	if len(lastArgs) != 2 || lastArgs[0] != 32 || lastArgs[1] != 7 {
+		t.Fatalf("expected final PineScript args [32 7], got %v", lastArgs)
+	}
+	if v.(float64) != 39 {
+		t.Fatalf("expected 39, got %v", v)
+	}
+}
+
+func TestRegisterFunctionWithParamNamesRejectsReservedAndBuiltinNames(t *testing.T) {
+	e := NewEngine()
+	fn := func(args ...any) (any, error) { return nil, nil }
+
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "ta.rsi", want: "conflicts with a built-in function"},
+		{name: "rsi", want: "conflicts with a built-in function"},
+		{name: "if", want: "is reserved"},
+		{name: "for", want: "is reserved"},
+		{name: "plot", want: "is reserved"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := e.RegisterFunctionWithParamNames(tc.name, []string{"x"}, fn)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestRegisterFunctionWithParamNamesRejectsInvalidParamNames(t *testing.T) {
+	e := NewEngine()
+	fn := func(args ...any) (any, error) { return nil, nil }
+
+	tests := []struct {
+		name       string
+		paramNames []string
+		want       string
+	}{
+		{name: "empty", paramNames: []string{"source", ""}, want: "parameter name at index 1 must not be empty"},
+		{name: "duplicate", paramNames: []string{"source", "offset", "source"}, want: "parameter name \"source\" is duplicated"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := e.RegisterFunctionWithParamNames("request.security", tc.paramNames, fn)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestRegisteredFunctionNamedArgsRequireParamNames(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 10, 20, 30))
+	e.SetDefaultSymbol("TEST")
+	e.RegisterFunction("request.security", func(args ...any) (any, error) {
+		return nil, fmt.Errorf("registered hook should not receive silently misbound named args: %v", args)
+	})
+
+	b, err := e.Compile(`
+base = close + 2
+request.security(offset = 7, source = base)
+`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	_, err = e.Execute(b)
+	if err == nil || !strings.Contains(err.Error(), "named arguments are not supported for registered function request.security without parameter metadata") {
+		t.Fatalf("expected missing parameter metadata error, got %v", err)
+	}
+}
+
 func TestUnsupportedFeatures(t *testing.T) {
 	tests := []string{
 		"strategy.entry(\"L\", strategy.long)",
 		"plot(close)",
+		"request.security(\"TEST\", \"D\", close)",
 	}
 	for _, script := range tests {
 		e := NewEngine()
@@ -652,6 +816,30 @@ func TestUnsupportedFeatures(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "unsupported feature") {
 			t.Fatalf("expected unsupported feature error for %q, got %v", script, err)
 		}
+	}
+}
+
+func TestUnknownMethodErrorNotUnsupportedFeature(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 1, 2, 3))
+	e.SetDefaultSymbol("TEST")
+
+	b, err := e.Compile(`
+var myArr = array.new_int(0)
+myArr.noSuchMethod()
+`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	_, err = e.Execute(b)
+	if err == nil {
+		t.Fatalf("expected unknown method error")
+	}
+	if strings.Contains(err.Error(), "unsupported feature") {
+		t.Fatalf("expected unknown method error, got unsupported feature: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unknown method") {
+		t.Fatalf("expected unknown method error, got %v", err)
 	}
 }
 
@@ -811,6 +999,54 @@ func TestCompiledBytecodeReusableAcrossEnginesWithDifferentProviders(t *testing.
 	}
 	if v2.(float64) != 66 {
 		t.Fatalf("expected second execute 66, got %v", v2)
+	}
+}
+
+func TestCompiledBytecodeIndependentOfRegisteredFunctions(t *testing.T) {
+	script := `
+base = close + 2
+request.security(offset = 7, source = base) + custom.transform(close, 3)
+`
+
+	plain := NewEngine()
+	want, err := plain.Compile(script)
+	if err != nil {
+		t.Fatalf("plain compile failed: %v", err)
+	}
+
+	withTargetHooks := NewEngine()
+	err = withTargetHooks.RegisterFunctionWithParamNames("request.security", []string{"source", "offset"}, func(args ...any) (any, error) {
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatalf("register request.security failed: %v", err)
+	}
+	err = withTargetHooks.RegisterFunctionWithParamNames("custom.transform", []string{"source", "length"}, func(args ...any) (any, error) {
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatalf("register custom.transform failed: %v", err)
+	}
+	withTargetHooks.RegisterFunction("unrelated.alpha", func(args ...any) (any, error) { return nil, nil })
+
+	got, err := withTargetHooks.Compile(script)
+	if err != nil {
+		t.Fatalf("compile with target hooks failed: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("bytecode changed when registered functions were present")
+	}
+
+	withDifferentHooks := NewEngine()
+	withDifferentHooks.RegisterFunction("unrelated.beta", func(args ...any) (any, error) { return nil, nil })
+	withDifferentHooks.RegisterFunction("unrelated.gamma", func(args ...any) (any, error) { return nil, nil })
+
+	got, err = withDifferentHooks.Compile(script)
+	if err != nil {
+		t.Fatalf("compile with different hooks failed: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("bytecode changed when different registered functions were present")
 	}
 }
 

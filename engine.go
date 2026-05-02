@@ -106,6 +106,7 @@ type EngineLogEntry struct {
 type Engine struct {
 	providers        []Provider
 	functions        map[string]UserFunction
+	functionParams   map[string]callParamSpec
 	defaultSymbol    string
 	defaultValueType string
 	timeframe        string
@@ -146,7 +147,7 @@ type providerCatalog struct {
 //	engine := pinescription.NewEngine()
 //	engine.RegisterMarketDataProvider(myProvider)
 func NewEngine() *Engine {
-	return &Engine{functions: map[string]UserFunction{}}
+	return &Engine{functions: map[string]UserFunction{}, functionParams: map[string]callParamSpec{}}
 }
 
 // RegisterFunction registers a user-defined function callable from Pine Script.
@@ -154,7 +155,104 @@ func NewEngine() *Engine {
 // are invoked with positional arguments evaluated according to Pine Script rules.
 // A function with the same name replaces any previously registered function.
 func (e *Engine) RegisterFunction(name string, function UserFunction) {
+	if e.functions == nil {
+		e.functions = map[string]UserFunction{}
+	}
 	e.functions[name] = function
+	delete(e.functionParams, name)
+}
+
+// RegisterFunctionWithParamNames registers a user-defined function with
+// parameter names used to bind Pine Script named arguments. Positional calls are
+// still passed through in source order. A function with the same name replaces
+// any previously registered function and parameter metadata.
+//
+// It returns an error when name is empty, parser-reserved, or already handled by
+// the built-in runtime dispatcher, or when paramNames contains empty or duplicate
+// names. Unsupported external hook points such as request.security may still be
+// registered.
+func (e *Engine) RegisterFunctionWithParamNames(name string, paramNames []string, function UserFunction) error {
+	if err := validateRegisteredFunctionName(name); err != nil {
+		return err
+	}
+	if err := validateRegisteredFunctionParamNames(name, paramNames); err != nil {
+		return err
+	}
+	if e.functions == nil {
+		e.functions = map[string]UserFunction{}
+	}
+	if e.functionParams == nil {
+		e.functionParams = map[string]callParamSpec{}
+	}
+	e.functions[name] = function
+	e.functionParams[name] = callParamSpec{Names: append([]string(nil), paramNames...)}
+	return nil
+}
+
+func validateRegisteredFunctionParamNames(functionName string, paramNames []string) error {
+	seen := make(map[string]struct{}, len(paramNames))
+	for i, paramName := range paramNames {
+		if paramName == "" {
+			return fmt.Errorf("registered function %q parameter name at index %d must not be empty", functionName, i)
+		}
+		if _, ok := seen[paramName]; ok {
+			return fmt.Errorf("registered function %q parameter name %q is duplicated", functionName, paramName)
+		}
+		seen[paramName] = struct{}{}
+	}
+	return nil
+}
+
+func validateRegisteredFunctionName(name string) error {
+	if name == "" {
+		return errors.New("registered function name must not be empty")
+	}
+	if isReservedPineKeyword(name) || isTypeKeyword(name) {
+		return fmt.Errorf("registered function name %q is reserved", name)
+	}
+	if isImplementedBuiltinFunctionName(name) {
+		return fmt.Errorf("registered function name %q conflicts with a built-in function", name)
+	}
+	return nil
+}
+
+func isReservedPineKeyword(name string) bool {
+	switch name {
+	case "if", "else", "while", "for", "switch", "break", "continue", "return", "var", "const", "varip", "simple", "series", "input", "type", "enum", "import", "export", "do", "as", "in", "method", "function", "by":
+		return true
+	default:
+		return false
+	}
+}
+
+func isImplementedBuiltinFunctionName(name string) bool {
+	if _, ok := builtinCallParamSpecs[name]; ok {
+		return true
+	}
+	if builtinFastID(name) != builtinFastUnknown {
+		return true
+	}
+	_, ok := implementedBuiltinFunctionNames[name]
+	return ok
+}
+
+var implementedBuiltinFunctionNames = map[string]struct{}{
+	"int": {}, "float": {}, "bool": {}, "string": {}, "str.tostring": {},
+	"input.time": {}, "input.session": {}, "input.symbol": {},
+	"alertcondition": {}, "color": {}, "color.rgb": {},
+	"box.get_bottom": {}, "box.get_top": {}, "box.set_right": {}, "box.delete": {},
+	"linefill.new": {}, "line.new": {}, "label.new": {}, "line.set_xy1": {}, "line.set_xy2": {}, "line.set_color": {},
+	"label.set_xy": {}, "label.set_text": {}, "label.set_tooltip": {},
+	"log.info": {}, "log.warning": {}, "log.error": {},
+	"map.new": {}, "map.clear": {}, "map.copy": {}, "map.size": {}, "map.put": {}, "map.get": {}, "map.contains": {}, "map.remove": {}, "map.keys": {}, "map.values": {},
+	"array.new_int": {}, "array.new_float": {}, "array.new_bool": {}, "array.new_string": {}, "array.new_box": {},
+	"array.size": {}, "array.get": {}, "array.set": {}, "array.push": {}, "array.pop": {}, "array.unshift": {}, "array.shift": {}, "array.clear": {}, "array.remove": {}, "array.concat": {}, "array.slice": {}, "array.includes": {}, "array.indexof": {}, "array.lastindexof": {}, "array.copy": {}, "array.from": {}, "array.insert": {}, "array.first": {}, "array.last": {}, "array.join": {}, "array.every": {}, "array.abs": {}, "array.sum": {}, "array.avg": {}, "array.max": {}, "array.min": {}, "array.range": {}, "array.median": {}, "array.mode": {}, "array.percentrank": {}, "array.percentile_linear_interpolation": {}, "array.percentile_nearest_rank": {}, "array.percentile_neareast_rank": {}, "array.binary_search_leftmost": {}, "array.binary_search_rightmost": {}, "array.covariance": {},
+	"str.length": {}, "str.upper": {}, "str.lower": {}, "str.contains": {}, "str.startswith": {}, "str.endswith": {}, "str.replace": {}, "str.substring": {}, "str.split": {}, "str.format": {},
+	"na": {}, "fixnan": {},
+	"math.abs": {}, "abs": {}, "math.round": {}, "round": {}, "math.floor": {}, "floor": {}, "math.ceil": {}, "ceil": {}, "math.pow": {}, "pow": {}, "math.sqrt": {}, "sqrt": {}, "math.log10": {}, "log10": {}, "math.avg": {}, "avg": {}, "math.sum": {}, "sum": {}, "math.exp": {}, "exp": {}, "math.sin": {}, "sin": {}, "math.cos": {}, "cos": {}, "math.tan": {}, "tan": {}, "math.acos": {}, "acos": {}, "math.asin": {}, "asin": {}, "math.atan": {}, "atan": {}, "math.sign": {}, "sign": {}, "math.todegrees": {}, "todegrees": {}, "math.toradians": {}, "toradians": {}, "math.random": {},
+	"timeframe.change": {}, "timeframe.in_seconds": {}, "timeframe.from_seconds": {}, "time": {}, "time_close": {}, "timenow": {}, "time_tradingday": {}, "timestamp": {},
+	"value_of": {}, "close_of": {}, "open_of": {}, "high_of": {}, "low_of": {},
+	"atr": {}, "ta.atr": {}, "change": {}, "ta.change": {}, "stdev": {}, "ta.stdev": {}, "correlation": {}, "ta.correlation": {}, "sma": {}, "ta.sma": {}, "ema": {}, "ta.ema": {}, "rsi": {}, "ta.rsi": {}, "crossover": {}, "ta.crossover": {}, "crossunder": {}, "ta.crossunder": {}, "cross": {}, "ta.cross": {}, "rma": {}, "ta.rma": {}, "wma": {}, "ta.wma": {}, "swma": {}, "ta.swma": {}, "hma": {}, "ta.hma": {}, "alma": {}, "ta.alma": {}, "linreg": {}, "ta.linreg": {}, "vwma": {}, "ta.vwma": {}, "cci": {}, "ta.cci": {}, "cmo": {}, "ta.cmo": {}, "cog": {}, "ta.cog": {}, "macd": {}, "ta.macd": {}, "mom": {}, "ta.mom": {}, "roc": {}, "ta.roc": {}, "barssince": {}, "ta.barssince": {}, "cum": {}, "ta.cum": {}, "valuewhen": {}, "ta.valuewhen": {}, "highestbars": {}, "ta.highestbars": {}, "lowestbars": {}, "ta.lowestbars": {}, "ta.max": {}, "ta.min": {}, "ta.median": {}, "ta.mode": {}, "ta.percentile_linear_interpolation": {}, "ta.percentile_nearest_rank": {}, "ta.percentrank": {}, "ta.range": {}, "ta.variance": {}, "ta.dev": {}, "ta.rising": {}, "ta.falling": {}, "tr": {}, "ta.tr": {}, "ta.pivothigh": {}, "ta.pivotlow": {}, "ta.pivot_point_levels": {}, "bb": {}, "ta.bb": {}, "bbw": {}, "ta.bbw": {}, "kc": {}, "ta.kc": {}, "kcw": {}, "ta.kcw": {}, "stoch": {}, "ta.stoch": {}, "mfi": {}, "ta.mfi": {}, "tsi": {}, "ta.tsi": {}, "wpr": {}, "ta.wpr": {}, "dmi": {}, "ta.dmi": {}, "sar": {}, "ta.sar": {}, "supertrend": {}, "ta.supertrend": {}, "sma_of": {}, "ema_of": {}, "rsi_of": {},
 }
 
 // RegisterMarketDataProvider adds a market data provider to the engine.
@@ -431,6 +529,17 @@ func copyUserFunctions(in map[string]UserFunction) map[string]UserFunction {
 	return out
 }
 
+func copyCallParamSpecs(in map[string]callParamSpec) map[string]callParamSpec {
+	if len(in) == 0 {
+		return nil
+	}
+	out := map[string]callParamSpec{}
+	for k, v := range in {
+		out[k] = callParamSpec{Names: append([]string(nil), v.Names...), Required: v.Required}
+	}
+	return out
+}
+
 func collectNeededSeriesKeys(program Program, activeSymbol, activeValueType string) map[string]struct{} {
 	needed := map[string]struct{}{}
 	needed[makeSeriesKey(activeSymbol, activeValueType)] = struct{}{}
@@ -461,6 +570,12 @@ var defaultEngine = NewEngine()
 // functions that should be isolated between different uses.
 func RegisterFunction(name string, function func(args ...interface{}) (interface{}, error)) {
 	defaultEngine.RegisterFunction(name, function)
+}
+
+// RegisterFunctionWithParamNames is a convenience wrapper around
+// defaultEngine.RegisterFunctionWithParamNames.
+func RegisterFunctionWithParamNames(name string, paramNames []string, function func(args ...interface{}) (interface{}, error)) error {
+	return defaultEngine.RegisterFunctionWithParamNames(name, paramNames, function)
 }
 
 // RegisterMarketDataProvider is a convenience wrapper around defaultEngine.RegisterMarketDataProvider.
@@ -597,6 +712,7 @@ func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, err
 	}
 
 	functions := copyUserFunctions(e.functions)
+	functionParams := copyCallParamSpecs(e.functionParams)
 
 	catalog, err := buildProviderCatalog(e.providers)
 	if err != nil {
@@ -625,6 +741,7 @@ func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, err
 	seriesByKey := map[string]SeriesExtended{}
 	seriesByKey[makeSeriesKey(activeSymbol, activeValueType)] = baseSeries
 	rt := newRuntime(program, functions, seriesByKey, catalog.valueTypesBySymbol, activeSymbol, activeValueType, timeframe, session, currentTime, startTime, baseSeries.Length(), catalog.fetchSeries, e.appendLog, e.alertSink)
+	rt.userFnParamSpecs = functionParams
 	for key := range neededKeys {
 		symbol, valueType, ok := splitSeriesKey(key)
 		if !ok {
