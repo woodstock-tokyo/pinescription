@@ -689,7 +689,7 @@ func TestRegisterDottedFunctionCallableWithNamedArgs(t *testing.T) {
 
 	calls := 0
 	var lastArgs []float64
-	e.RegisterFunctionWithParamNames("request.security", []string{"source", "offset"}, func(args ...any) (any, error) {
+	err := e.RegisterFunctionWithParamNames("request.security", []string{"source", "offset"}, func(args ...any) (any, error) {
 		calls++
 		if len(args) != 2 {
 			return nil, fmt.Errorf("request.security expected 2 args, got %d", len(args))
@@ -705,6 +705,9 @@ func TestRegisterDottedFunctionCallableWithNamedArgs(t *testing.T) {
 		lastArgs = []float64{seriesValue, offset}
 		return seriesValue + offset, nil
 	})
+	if err != nil {
+		t.Fatalf("register request.security failed: %v", err)
+	}
 
 	b, err := e.Compile(`
 base = close + 2
@@ -725,6 +728,30 @@ request.security(offset = 7, source = base)
 	}
 	if v.(float64) != 39 {
 		t.Fatalf("expected 39, got %v", v)
+	}
+}
+
+func TestRegisterFunctionWithParamNamesRejectsReservedAndBuiltinNames(t *testing.T) {
+	e := NewEngine()
+	fn := func(args ...any) (any, error) { return nil, nil }
+
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "ta.rsi", want: "conflicts with a built-in function"},
+		{name: "rsi", want: "conflicts with a built-in function"},
+		{name: "if", want: "is reserved"},
+		{name: "for", want: "is reserved"},
+		{name: "plot", want: "is reserved"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := e.RegisterFunctionWithParamNames(tc.name, []string{"x"}, fn)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+		})
 	}
 }
 
