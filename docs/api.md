@@ -80,15 +80,15 @@ Registers a custom callable function on the package-level default engine and rec
 
 This is required for registered functions that may be called with named arguments. Without parameter metadata, a named-argument call to a registered function fails at runtime instead of silently forwarding values in source order.
 
-The function name must be an external hook point rather than a Pine language or implemented built-in name. Registration returns an error when `name` is empty, parser-reserved, or an already implemented built-in function such as `ta.rsi`. Unsupported hook points such as `plot`, `request.security`, and `strategy.order` are allowed. Each entry in `paramNames` must be non-empty and unique.
+The function name may be an ordinary custom function name such as `my_signal` or an exact unsupported feature hook point such as `plot`, `request.security`, or `strategy.order`. Registration returns an error when `name` is empty, parser-reserved, a Pine type keyword such as `int`, `float`, `color`, or `table`, or an already implemented built-in function such as `ta.rsi`. Each entry in `paramNames` must be non-empty and unique.
 
 **Parameters:**
-- `name`: The exact Pine Script function name to hook, including namespace when applicable (for example, `plot` or `request.security`).
+- `name`: The Pine Script function name to register, including namespace when hooking unsupported APIs (for example, `my_signal`, `plot`, or `request.security`).
 - `paramNames`: Parameter names in the order expected by the Go function. Names must be non-empty and unique.
 - `function`: A function matching the signature `func(args ...interface{}) (interface{}, error)`.
 
 **Returns:**
-- `error`: Validation error for invalid/reserved/built-in function names or invalid parameter names, or nil on success.
+- `error`: Validation error for invalid, reserved, type-keyword, or built-in function names, or invalid parameter names, or nil on success.
 
 ### RegisterMarketDataProvider
 
@@ -250,19 +250,19 @@ func (e *Engine) RegisterFunctionWithParamNames(name string, paramNames []string
 
 Registers a custom callable function with this engine and records parameter names for named-argument binding. Positional calls are passed through in source order; named calls are reordered according to `paramNames` before invoking `fn`.
 
-Use this for external hook points such as `plot` or `request.security` when scripts may call them with named arguments. The runtime treats unregistered `request.*`, `strategy.*`, and plotting calls as unsupported features; an exact-name hook makes only that registered call executable.
+Use this for ordinary custom functions when scripts may call them with named arguments, and for exact external hook points such as `plot` or `request.security`. The runtime treats unregistered `request.*`, `strategy.*`, and plotting calls as unsupported features; an exact-name hook makes only that registered call executable.
 
-Registration validates `name` and returns an error when it is empty, parser-reserved, or an implemented built-in function. For example, registering `plot` and `request.security` is allowed, while `ta.rsi`, `rsi`, `if`, and `for` are rejected. Each entry in `paramNames` must also be non-empty and unique so named-argument binding is unambiguous.
+Registration validates `name` and returns an error when it is empty, parser-reserved, an ordinary Pine type keyword, or an implemented built-in function. Valid names include ordinary custom names such as `my_signal` and exact unsupported hook targets such as `plot` or `request.security`. Rejected-name examples include `ta.rsi`, `rsi`, `if`, `for`, `int`, `float`, `color`, and `table`. Each entry in `paramNames` must also be non-empty and unique so named-argument binding is unambiguous.
 
 Calling `Engine.RegisterFunction` later with the same `name` replaces the function and clears the parameter metadata.
 
 **Parameters:**
-- `name`: The exact Pine Script function name to hook, including namespace when applicable.
+- `name`: The Pine Script function name to register, including namespace when hooking unsupported APIs.
 - `paramNames`: Parameter names in the order expected by `fn`. Names must be non-empty and unique.
 - `fn`: The function implementation.
 
 **Returns:**
-- `error`: Validation error for invalid/reserved/built-in function names or invalid parameter names, or nil on success.
+- `error`: Validation error for invalid, reserved, type-keyword, or built-in function names, or invalid parameter names, or nil on success.
 
 ### Engine.RegisterMarketDataProvider
 
