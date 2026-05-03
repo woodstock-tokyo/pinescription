@@ -155,7 +155,7 @@ Common series keys include `AAPL|close`, `AAPL|volume`, etc.
 - Request APIs (`request.security`, `request.financial`...)
 - Plot APIs (`plot`, `plotshape`...)
 
-These return explicit runtime errors when used unless you register an exact-name custom function hook such as `RegisterFunction("strategy.order", fn)` or `RegisterFunctionWithParamNames("request.security", []string{"symbol", "timeframe", "expression"}, fn)`.
+These return explicit runtime errors when used unless you register an exact-name custom function hook. Use `RegisterFunction("strategy.order", fn)` for positional-only hooks, or `RegisterFunctionWithParamNames(...)` when the Pine call may use named arguments, for example `RegisterFunctionWithParamNames("plot", []string{"series", "title", "color"}, fn)` or `RegisterFunctionWithParamNames("request.security", []string{"symbol", "timeframe", "expression"}, fn)`.
 
 ---
 

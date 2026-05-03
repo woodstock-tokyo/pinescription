@@ -169,8 +169,8 @@ func (e *Engine) RegisterFunction(name string, function UserFunction) {
 //
 // It returns an error when name is empty, parser-reserved, or already handled by
 // the built-in runtime dispatcher, or when paramNames contains empty or duplicate
-// names. Unsupported external hook points such as request.security may still be
-// registered.
+// names. Unsupported external hook points such as plot and request.security may
+// still be registered.
 func (e *Engine) RegisterFunctionWithParamNames(name string, paramNames []string, function UserFunction) error {
 	if err := validateRegisteredFunctionName(name); err != nil {
 		return err
@@ -207,7 +207,7 @@ func validateRegisteredFunctionName(name string) error {
 	if name == "" {
 		return errors.New("registered function name must not be empty")
 	}
-	if isReservedPineKeyword(name) || isTypeKeyword(name) {
+	if isReservedPineKeyword(name) || (isTypeKeyword(name) && !isUnsupportedFeatureCallName(name)) {
 		return fmt.Errorf("registered function name %q is reserved", name)
 	}
 	if isImplementedBuiltinFunctionName(name) {

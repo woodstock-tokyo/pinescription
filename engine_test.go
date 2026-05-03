@@ -743,7 +743,6 @@ func TestRegisterFunctionWithParamNamesRejectsReservedAndBuiltinNames(t *testing
 		{name: "rsi", want: "conflicts with a built-in function"},
 		{name: "if", want: "is reserved"},
 		{name: "for", want: "is reserved"},
-		{name: "plot", want: "is reserved"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -774,6 +773,98 @@ func TestRegisterFunctionWithParamNamesRejectsInvalidParamNames(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestPlotHookCallableWithNamedArgs(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 10, 20, 30))
+	e.SetDefaultSymbol("TEST")
+
+	calls := 0
+	var lastArgs []any
+	err := e.RegisterFunctionWithParamNames("plot", []string{"series", "title", "color"}, func(args ...any) (any, error) {
+		calls++
+		lastArgs = append([]any(nil), args...)
+		if len(args) != 2 {
+			return nil, fmt.Errorf("plot expected 2 bound args, got %d", len(args))
+		}
+		seriesValue, ok := toFloat(args[0])
+		if !ok {
+			return nil, fmt.Errorf("plot first arg is not numeric: %T", args[0])
+		}
+		title, ok := args[1].(string)
+		if !ok {
+			return nil, fmt.Errorf("plot title is not a string: %T", args[1])
+		}
+		if title != "Close" {
+			return nil, fmt.Errorf("plot title = %q, want Close", title)
+		}
+		return seriesValue, nil
+	})
+	if err != nil {
+		t.Fatalf("register plot failed: %v", err)
+	}
+
+	b, err := e.Compile(`
+plot(close, title = "Close")
+`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	v, err := e.Execute(b)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if calls == 0 {
+		t.Fatalf("expected registered plot hook to be called from PineScript")
+	}
+	if len(lastArgs) != 2 || lastArgs[0] != 30.0 || lastArgs[1] != "Close" {
+		t.Fatalf("expected final PineScript args [30 Close], got %v", lastArgs)
+	}
+	if v.(float64) != 30 {
+		t.Fatalf("expected 30, got %v", v)
+	}
+}
+
+func TestPlotHookPositionalStillWorksWithoutParamNames(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 10, 20, 30))
+	e.SetDefaultSymbol("TEST")
+
+	calls := 0
+	var lastArgs []any
+	e.RegisterFunction("plot", func(args ...any) (any, error) {
+		calls++
+		lastArgs = append([]any(nil), args...)
+		if len(args) != 1 {
+			return nil, fmt.Errorf("plot expected 1 arg, got %d", len(args))
+		}
+		seriesValue, ok := toFloat(args[0])
+		if !ok {
+			return nil, fmt.Errorf("plot first arg is not numeric: %T", args[0])
+		}
+		return seriesValue + 1, nil
+	})
+
+	b, err := e.Compile(`
+plot(close)
+`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	v, err := e.Execute(b)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if calls == 0 {
+		t.Fatalf("expected registered plot hook to be called from PineScript")
+	}
+	if len(lastArgs) != 1 || lastArgs[0] != 30.0 {
+		t.Fatalf("expected final PineScript args [30], got %v", lastArgs)
+	}
+	if v.(float64) != 31 {
+		t.Fatalf("expected 31, got %v", v)
 	}
 }
 
