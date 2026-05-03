@@ -162,15 +162,16 @@ func (e *Engine) RegisterFunction(name string, function UserFunction) {
 	delete(e.functionParams, name)
 }
 
-// RegisterFunctionWithParamNames registers a user-defined function with
-// parameter names used to bind Pine Script named arguments. Positional calls are
-// still passed through in source order. A function with the same name replaces
-// any previously registered function and parameter metadata.
+// RegisterFunctionWithParamNames registers an ordinary custom function or an
+// exact unsupported feature hook with parameter names used to bind Pine Script
+// named arguments. Positional calls are still passed through in source order. A
+// function with the same name replaces any previously registered function and
+// parameter metadata.
 //
-// It returns an error when name is empty, parser-reserved, or already handled by
-// the built-in runtime dispatcher, or when paramNames contains empty or duplicate
-// names. Unsupported external hook points such as request.security may still be
-// registered.
+// It returns an error when name is empty, parser-reserved, a Pine type keyword
+// that is not an unsupported hook target, or already handled by the built-in
+// runtime dispatcher. It also returns an error when paramNames contains empty or
+// duplicate names.
 func (e *Engine) RegisterFunctionWithParamNames(name string, paramNames []string, function UserFunction) error {
 	if err := validateRegisteredFunctionName(name); err != nil {
 		return err
@@ -207,7 +208,7 @@ func validateRegisteredFunctionName(name string) error {
 	if name == "" {
 		return errors.New("registered function name must not be empty")
 	}
-	if isReservedPineKeyword(name) || isTypeKeyword(name) {
+	if isReservedPineKeyword(name) || (isTypeKeyword(name) && !isUnsupportedFeatureCallName(name)) {
 		return fmt.Errorf("registered function name %q is reserved", name)
 	}
 	if isImplementedBuiltinFunctionName(name) {
@@ -573,7 +574,9 @@ func RegisterFunction(name string, function func(args ...interface{}) (interface
 }
 
 // RegisterFunctionWithParamNames is a convenience wrapper around
-// defaultEngine.RegisterFunctionWithParamNames.
+// defaultEngine.RegisterFunctionWithParamNames. Use it for ordinary custom
+// functions or exact unsupported feature hooks that may receive Pine Script
+// named arguments.
 func RegisterFunctionWithParamNames(name string, paramNames []string, function func(args ...interface{}) (interface{}, error)) error {
 	return defaultEngine.RegisterFunctionWithParamNames(name, paramNames, function)
 }

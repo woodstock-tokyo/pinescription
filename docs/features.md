@@ -354,3 +354,5 @@ All unregistered plotting functions return an unsupported feature error:
 - `plot`, `plotshape`, `plotchar`, `plotbar`, `plotcandle`
 - `plotarrow`, `fill`
 - And all other visualization functions
+
+Exact-name custom function hooks can also provide selected plotting behavior. Use `RegisterFunction` for simple positional hooks such as `plot(close)`, or `RegisterFunctionWithParamNames` when Pine scripts may use named arguments, such as `plot(close, title = "Close")`.
