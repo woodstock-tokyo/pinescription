@@ -1429,11 +1429,19 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 			return nil, true, fmt.Errorf("atr(length) expects 1 arg")
 		}
 		lengthF, _ := toFloat(args[0])
+		highSeries, err := r.getSeries(r.activeSymbol, "high")
+		if err != nil {
+			return nil, true, err
+		}
+		lowSeries, err := r.getSeries(r.activeSymbol, "low")
+		if err != nil {
+			return nil, true, err
+		}
 		closeSeries, err := r.getSeries(r.activeSymbol, "close")
 		if err != nil {
 			return nil, true, err
 		}
-		return atrFromSeries(closeSeries, int(lengthF)), true, nil
+		return atrFromSeries(r.seriesAtEvalSeries(highSeries), r.seriesAtEvalSeries(lowSeries), r.seriesAtEvalSeries(closeSeries), int(lengthF)), true, nil
 	case "change", "ta.change":
 		return r.builtinChange(rawArgs, args)
 	case "highest", "ta.highest":
@@ -4317,19 +4325,18 @@ func emaFromSeries(seriesVals SeriesExtended, length int) float64 {
 	return ema
 }
 
-func atrFromSeries(seriesVals SeriesExtended, length int) float64 {
-	n := seriesLen(seriesVals)
-	if length <= 0 || n < length+1 {
+func atrFromSeries(high, low, close SeriesExtended, length int) float64 {
+	n := seriesLen(high)
+	if seriesLen(low) < n {
+		n = seriesLen(low)
+	}
+	if seriesLen(close) < n {
+		n = seriesLen(close)
+	}
+	if length <= 0 || n < length {
 		return math.NaN()
 	}
-	tr := wseries.NewQueue(n)
-	prev := seriesChronoValue(seriesVals, 0)
-	tr.Update(0)
-	for i := 1; i < n; i++ {
-		cur := seriesChronoValue(seriesVals, i)
-		tr.Update(math.Abs(cur - prev))
-		prev = cur
-	}
+	tr := trueRangeSeriesFromSeries(high, low, close)
 	return rmaFromSeries(tr, length)
 }
 

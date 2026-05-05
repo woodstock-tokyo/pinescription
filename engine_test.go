@@ -1328,10 +1328,31 @@ down[1] ? 1 : 0
 }
 
 func TestTAATR(t *testing.T) {
-	v := compileExec(t, "ta.atr(3)", 10, 13, 12, 18)
+	e := NewEngine()
+	p := &testProvider{
+		data: map[string]SeriesExtended{
+			makeSeriesKey("AAA", "high"):  mkSeries(10, 13, 12, 20),
+			makeSeriesKey("AAA", "low"):   mkSeries(8, 9, 11, 14),
+			makeSeriesKey("AAA", "close"): mkSeries(9, 10, 11, 15),
+		},
+		valueTypes: []string{"high", "low", "close"},
+		timeframe:  "1D",
+		session:    "regular",
+	}
+	e.RegisterMarketDataProvider(p)
+	e.SetDefaultSymbol("AAA")
+
+	b, err := e.Compile("ta.atr(3)")
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	v, err := e.Execute(b)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
 	f := v.(float64)
-	if math.Abs(f-2.8888888889) > 0.000001 {
-		t.Fatalf("expected ~2.8888888889, got %v", f)
+	if math.Abs(f-4.7777777778) > 0.000001 {
+		t.Fatalf("expected ~4.7777777778, got %v", f)
 	}
 }
 

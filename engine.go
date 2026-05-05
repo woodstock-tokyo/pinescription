@@ -974,7 +974,11 @@ func collectProgramRequirements(program Program) ([]string, []string, []string) 
 				if len(expr.Args) >= 1 && expr.Args[0] != nil && expr.Args[0].Kind == "string" {
 					addSeriesKey(expr.Args[0].String, valueType)
 				}
-			case "sma", "ema", "rsi", "atr", "ta.sma", "ta.ema", "ta.rsi", "ta.atr":
+			case "atr", "ta.atr":
+				addValueType("high")
+				addValueType("low")
+				addValueType("close")
+			case "sma", "ema", "rsi", "ta.sma", "ta.ema", "ta.rsi":
 				if len(expr.Args) > 0 {
 					if vt, ok := valueTypeFromExpr(expr.Args[0]); ok {
 						addValueType(vt)
