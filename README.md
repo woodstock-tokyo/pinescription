@@ -24,7 +24,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 ---
 
 <p align="center">
-  <img src="./assets/demo.gif" alt="Pinescription live demo — BTC/USDT chart with Bollinger Bands and SMA indicators compiled from Pine Script" width="720">
+  <img src="./assets/demo.gif" alt="Pinescription live demo — BTC/USDT chart with RSI, SMA, and a custom styled indicator compiled from Pine Script" width="720">
 </p>
 
 ---
