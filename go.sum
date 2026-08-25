@@ -1,2 +1,4 @@
+github.com/woodstock-tokyo/pinescription v0.0.0-20260706073641-8befce27eba3 h1:pBvvnNi9psGlBKviuTYJcsZ60XeyhrJ35NXSEw/plyw=
+github.com/woodstock-tokyo/pinescription v0.0.0-20260706073641-8befce27eba3/go.mod h1:+kS3NoS7wYiqku5C0Nc7kqh+r86s/Tll2Igxr3pbCx0=
 gonum.org/v1/gonum v0.17.0 h1:VbpOemQlsSMrYmn7T2OUvQ4dqxQXU+ouZFQsZOx50z4=
 gonum.org/v1/gonum v0.17.0/go.mod h1:El3tOrEuMpv2UdMrbNlKEh9vd86bmQ6vqIcDwxEOc1E=

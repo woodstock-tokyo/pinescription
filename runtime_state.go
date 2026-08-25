@@ -722,14 +722,27 @@ func (r *Runtime) barTimes() (time.Time, time.Time, time.Time) {
 	if r.lastTimeIndex == idx && !r.lastBarOpen.IsZero() {
 		return r.lastBarOpen, r.lastBarClose, r.lastTradingDay
 	}
-	base := r.startTime
-	if base.IsZero() {
-		base = r.currentTime
+
+	var open time.Time
+
+	timeKey := "time"
+	times, err := r.getSeries(r.activeSymbol, timeKey)
+
+	if err != nil || times.Length() == 0 {
+		// infer time from bar index and bar step
+		base := r.startTime
+		if base.IsZero() {
+			base = r.currentTime
+		}
+		if base.IsZero() {
+			base = time.Now().UTC()
+		}
+		open = base.Add(time.Duration(idx) * r.barStep).UTC()
+	} else {
+		// get time from the "time" series
+		open = time.UnixMilli(int64(times.Last(idx))).UTC()
 	}
-	if base.IsZero() {
-		base = time.Now().UTC()
-	}
-	open := base.Add(time.Duration(idx) * r.barStep).UTC()
+
 	close := open.Add(r.barStep)
 	trading := time.Date(open.Year(), open.Month(), open.Day(), 0, 0, 0, 0, time.UTC)
 	r.lastTimeIndex = idx
