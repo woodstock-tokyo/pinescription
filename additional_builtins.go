@@ -270,7 +270,9 @@ func additionalArray(name string, args []interface{}) (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
-		i := sort.Search(len(vals), func(i int) bool { return vals[i] >= target })
+		// Ascending sort places na last. Treat it as greater than valid
+		// numbers so Search's predicate stays monotone across that suffix.
+		i := sort.Search(len(vals), func(i int) bool { return math.IsNaN(vals[i]) || vals[i] >= target })
 		if i < len(vals) && vals[i] == target {
 			return i, nil
 		}

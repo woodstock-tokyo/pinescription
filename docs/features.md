@@ -252,7 +252,8 @@ sort last. Mixed string/numeric arrays are rejected before mutation.
 - `array.binary_search_leftmost(arr, value)` - Binary search for leftmost insertion point
 - `array.binary_search_rightmost(arr, value)` - Binary search for rightmost insertion point
 - `array.binary_search(arr, value)` - Search ascending numeric data; returns -1
-  when the value is absent
+  when the value is absent. Trailing `na` elements sort after valid numbers and
+  do not hide valid matches.
 
 ### Statistics
 

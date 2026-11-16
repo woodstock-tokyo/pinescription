@@ -65,6 +65,33 @@ result = a.get("x")+a.get("y")`, 5},
 	}
 }
 
+func TestArrayBinarySearchSortedTrailingNA(t *testing.T) {
+	for _, tc := range []struct {
+		name, values, target string
+		want                 float64
+	}{
+		{"single_valid_value", "1, na", "1", 0},
+		{"multiple_trailing_na", "1, na, na, na", "1", 0},
+		{"first_valid_value", "na, 3, 1, na, 2, na, na, na", "1", 0},
+		{"middle_valid_value", "na, 3, 1, na, 2, na, na, na", "2", 1},
+		{"last_valid_value", "na, 3, 1, na, 2, na, na, na", "3", 2},
+		{"missing_below_range", "1, 2, 3, na", "0", -1},
+		{"missing_above_range", "1, 2, 3, na", "4", -1},
+		{"all_na", "na, na", "1", -1},
+		{"empty", "", "1", -1},
+		{"na_target", "1, na", "na", -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := "a = array.from(" + tc.values + ")\na.sort()\nresult = a.binary_search(" + tc.target + ")"
+			got := completionValue(t, script, 1)
+			n, ok := toFloat(got)
+			if !ok || math.IsNaN(n) || n != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAdditionalStringAPIs(t *testing.T) {
 	for _, tc := range []struct {
 		expr string
