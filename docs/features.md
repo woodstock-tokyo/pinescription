@@ -6,7 +6,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Supported Features
 
-Complete reference of Pine Script v6 features supported by Pinescription.
+Reference of supported Pine Script v6 features and their execution limits.
+The numbered PineTS comparison is tracked in [api-parity.md](api-parity.md).
 
 ## Language Core
 
@@ -69,6 +70,34 @@ Pinescription provides access to OHLCV data and related market information throu
 - `hlcc4` - Average of high, low, and twice the close: `(high + low + close * 2) / 4`
 - `ohlc4` - Average of open, high, low, and close: `(open + high + low + close) / 4`
 - `bar_index` - Sequential index of the bar (0-based)
+- `last_bar_index`, `last_bar_time` - Index and actual/configured opening time of
+  the final loaded bar
+- `bid`, `ask` - Provider-supplied values on `1T` only; otherwise `na` (no fallback
+  to close prices)
+
+### Market Context and Historical State
+
+Optional `SymbolInfoProvider`, `BarTimeProvider`, and `MarketSessionsProvider`
+interfaces extend the existing Provider without changing it. Hosts can instead
+use `Engine.SetSymbolInfo`, `SetBarTimes`, and `SetMarketSessions`.
+
+- `syminfo` exposes symbol identity, pricing, currency, timezone, session, and
+  supplied metadata fields. Missing numeric metadata is `na`, missing text is
+  empty, and the default clock timezone is explicitly UTC. Tick size is **not**
+  invented. `syminfo.prefix(symbol)` and `syminfo.ticker(symbol)` extract parts
+  of prefixed symbols, including encoded ticker IDs.
+- All seven `barstate` flags are available, including history indexing. Engine
+  execution is historical: `ishistory`, `isnew`, and `isconfirmed` are true;
+  `isrealtime` is false. The loaded endpoints determine `isfirst`, `islast`, and
+  `islastconfirmedhistory`. This is not a live-tick rollback engine.
+- `session.ismarket`, `ispremarket`, `ispostmarket`, `isfirstbar`,
+  `islastbar`, `isfirstbar_regular`, and `islastbar_regular` use explicit weekly
+  schedules in the exchange timezone. Querying these without a regular
+  `MarketSessions` schedule is an error. Adjacent pre/regular/post windows form
+  an extended session. No exchange holidays or special closes are inferred.
+- Calendar variables and `year(timestamp[, timezone])`, `month`, `weekofyear`,
+  `dayofmonth`, `dayofweek`, `hour`, `minute`, and `second` use the configured
+  exchange timezone unless an explicit timezone is passed.
 
 ### Series History Indexing
 
@@ -121,6 +150,25 @@ All built-in indicators are also available under the `ta` namespace:
 - `ta.change`, `ta.highest`, `ta.lowest`
 - `ta.stdev`, `ta.correlation`
 
+### Additional TA APIs
+
+- Volume variables: `ta.accdist`, `ta.iii`, `ta.nvi`, `ta.obv`, `ta.pvi`,
+  `ta.pvt`, `ta.wad`, and `ta.wvad`. These are bare series, not function calls.
+  Cumulative calculations support history access and do not double-count a
+  repeated evaluation of the current bar. NVI/PVI begin at 1; OBV/PVT have an
+  `na` first value because no preceding close exists.
+- `ta.rci(source, length)` computes Pearson correlation of chronological ranks
+  with average ranks for tied prices, scaled to -100..100. Like the scanned
+  PineTS implementation, it warms up through `bar_index < length` and returns
+  `na` for constant or `na`-containing windows.
+- `ta.vwap` uses `hlc3`. `ta.vwap(source)` resets at each exchange-calendar date.
+  `ta.vwap(source, anchor)` starts at the first true anchor and resets whenever
+  the anchor is true. `ta.vwap(source, anchor, stdev_mult)` returns
+  `[vwap, upper, lower]`, using volume-weighted population deviation.
+  Zero volume or unavailable source/volume yields `na`. Calls have independent
+  state; current-bar re-evaluation does not accumulate twice. Exchange-calendar
+  daily resets are not an inferred futures/overnight trading-day calendar.
+
 ### math Namespace
 
 A subset of mathematical functions from the `math` namespace:
@@ -138,11 +186,14 @@ A subset of mathematical functions from the `math` namespace:
 - `math.sin(x)` - Sine (in radians)
 - `math.cos(x)` - Cosine (in radians)
 - `math.tan(x)` - Tangent (in radians)
+- `math.round_to_mintick(x)` - Round to configured `syminfo.mintick`, with ties
+  toward the higher tick. Missing tick metadata is a configuration error.
 
 ### NA Helpers
 
 - `na(value)` - Check if a value is not available (null)
 - `nz(value, replacement)` - Return value or replacement if value is NA
+- `fixnan(source)` - Carry forward the latest non-`na` call-site value
 
 ### Type Helpers
 
@@ -163,6 +214,9 @@ Arrays in Pinescription are mutable and passed by reference, enabling in-place m
 - `array.new_string(size, initial_value)` - Create string array
 - `array.new_line(size)` - Create line array
 - `array.new_label(size)` - Create label array
+- `array.new_color`, `array.new_linefill`, `array.new_table` - Additional typed
+  constructors; all also support the corresponding `array.new<type>` spelling.
+  Arrays of drawing values do not add drawing/rendering behavior.
 - `array.new<type>(size, initial_value)` - Generic array constructor
 - `array.from(values)` - Create array from a list of values
 - `array.copy(array)` - Create a shallow copy of an array
@@ -182,6 +236,13 @@ Arrays in Pinescription are mutable and passed by reference, enabling in-place m
 - `array.slice(arr, from, to)` - Extract a portion
 - `array.first(arr)` - Get first element
 - `array.last(arr)` - Get last element
+- `array.fill(arr, value[, index_from[, index_to]])` - Fill a half-open range
+- `array.reverse(arr)` - Reverse in place
+- `array.sort(arr[, order])` - Stable in-place numeric or string sort
+- `array.sort_indices(arr[, order])` - New array of indices, leaving input intact
+
+Sort order is `order.ascending` (default) or `order.descending`. `na` elements
+sort last. Mixed string/numeric arrays are rejected before mutation.
 
 ### Search
 
@@ -190,6 +251,8 @@ Arrays in Pinescription are mutable and passed by reference, enabling in-place m
 - `array.lastindexof(arr, value)` - Find index of last occurrence
 - `array.binary_search_leftmost(arr, value)` - Binary search for leftmost insertion point
 - `array.binary_search_rightmost(arr, value)` - Binary search for rightmost insertion point
+- `array.binary_search(arr, value)` - Search ascending numeric data; returns -1
+  when the value is absent
 
 ### Statistics
 
@@ -205,11 +268,46 @@ Arrays in Pinescription are mutable and passed by reference, enabling in-place m
 - `array.percentrank(arr, value)` - Percentile rank of a value
 - `array.percentile_linear_interpolation(arr, percent)` - Percentile with linear interpolation
 - `array.percentile_nearest_rank(arr, percent)` - Percentile using nearest rank method
+- `array.variance(arr[, biased])`, `array.stdev(arr[, biased])` - Ignore `na`
+  elements; population divisor by default, sample divisor when `biased=false`
+- `array.standardize(arr)` - New float array of population-standardized values;
+  `na` elements remain `na`. Constant valid values become 1, matching the
+  scanned PineTS compatibility behavior.
 
 ### Utilities
 
 - `array.join(arr, separator)` - Join array elements into a string
 - `array.every(arr, condition)` - Check if all elements satisfy a condition
+- `array.some(arr)` - True when any non-`na` element is truthy
+
+## Maps
+
+`map.new`, `clear`, `copy`, `size`, `put`, `get`, `contains`, `remove`, `keys`,
+and `values` are available. `map.put_all(destination, source)` mutates the
+destination, replacing matching keys; self-merges are safe. Array/map receiver
+syntax is supported, for example `a.sort()` and `destination.put_all(source)`.
+
+## Inputs: Pre-Execution Parameters
+
+Supported input kinds are generic `input`, `int`, `float`, `bool`, `string`,
+`color`, `time`, `session`, `symbol`, `source`, `price`, `text_area`, `timeframe`,
+and `enum`.
+
+Hosts inspect `Engine.InputParameters(bytecode)` without fetching market data
+or executing Pine code, then call `SetInputParameters` or configure an
+`InputResolver`. Values, type/range/option constraints, and source/enum selections
+are resolved once **before provider calls and before runtime creation**.
+Runtime calls only read the resulting bindings; source selections follow the
+chosen series on each bar. Invalid choices fail before execution.
+
+Each input requires a constant `defval`. IDs use the declaration/assignment
+name, or `input#N` for anonymous/repeated names. Pine enum declarations with
+optional display titles are supported for enum parameters. Host enum choices
+may use a member name, its qualified name, or `EnumValue`. Source selections use
+`InputSource("close")` or another supported OHLC/derived source name.
+
+This deliberately replaces the old permissive behavior where an omitted
+`defval` silently produced zero. See [api.md](api.md) for host interfaces.
 
 ### Compatibility Aliases
 
@@ -297,17 +395,191 @@ Pinescription provides string manipulation functions and placeholder types for c
 
 ### String Helpers
 
-- `str.tostring(value)` - Convert value to string
+- `str.tostring(value, format)` - Convert values to text; the format is optional.
+  Numeric patterns support `0`, `#`, decimal places, comma grouping, percent
+  scaling, literal prefixes/suffixes, and a semicolon-separated negative pattern.
+  Named formats include `format.percent` (two decimals, no multiplication by
+  100), `format.volume` (K/M/B/T suffixes), and `format.mintick` (requires symbol
+  tick metadata). The default numeric format uses up to ten decimals.
 - `str.length(str)` - Get string length
 - `str.upper(str)` - Convert to uppercase
 - `str.lower(str)` - Convert to lowercase
 - `str.contains(str, substring)` - Check if substring exists
 - `str.startswith(str, prefix)` - Check if string starts with prefix
 - `str.endswith(str, suffix)` - Check if string ends with suffix
-- `str.replace(str, old, new)` - Replace substring
+- `str.replace(str, old, new, occurrence)` - Replace one occurrence (default:
+  the first, index zero). Occurrences may overlap. An absent occurrence leaves
+  the source unchanged.
 - `str.substring(str, from, to)` - Extract substring
 - `str.split(str, delimiter)` - Split into array
-- `str.format(format, args)` - Format string with arguments
+- `str.tonumber(str)` - Parse a signed decimal string; invalid/exponential forms
+  return `na`
+- `str.trim(str)` - Remove surrounding whitespace
+- `str.repeat(source, count[, separator])` - Bounded repetition (0 is empty)
+- `str.replace_all(source, target, replacement)` - Literal replacement of all
+  non-overlapping occurrences
+- `str.pos(source, target)` - Character position of the first match, or `na`
+- `str.match(source, pattern)` - First regex match, or an empty string. Patterns
+  use Go's RE2-compatible syntax: Java lookarounds/backreferences are **not**
+  emulated and unsupported expressions produce an error.
+- `str.format_time(timestamp[, format[, timezone]])` - Calendar patterns,
+  default `yyyy-MM-dd'T'HH:mm:ss'Z'`, exchange timezone unless overridden.
+  Supported tokens include `y`, `M`, `d`, `E`, `D`, `w`, `H`, `h`, `m`, `s`,
+  `S`, `a`, `Z`, `X`, and `z`, with quoted literals.
+- `str.format(format, args...)` - Indexed placeholders, including
+  `{0,number,integer}`, `{0,number,percent}`, `{0,number,currency}`, custom number
+  patterns, and `{0,date,yyyy-MM-dd}` / `{0,time,HH:mm:ss}`. Single quotes escape
+  literal text; doubled quotes produce a quote. The existing `{{` / `}}` brace
+  extension and preservation of out-of-range placeholders remain supported.
+  Message number formatting rounds ties to even; `str.tostring` rounds decimal
+  ties away from zero. Patterns are limited to 4096 bytes and results to 1 MiB.
+
+### Completed Series and Time Helpers
+
+- `fixnan(source)` carries the most recent non-`na` value from an earlier
+  evaluation of the same call site. It returns `na` until such a value exists.
+  Separate calls, including separate calls through a script function, have
+  independent state. Re-evaluating a bar does not commit a tentative value.
+- Bare `ta.tr` is true range with an `na` result when the preceding close is
+  unavailable. `ta.tr(true)` uses `high - low` in that case; `ta.tr(false)` does
+  not. The legacy no-argument `tr()` / `ta.tr()` extension retains its fallback.
+- `time()` and `time_close()` accept timeframe, session, timezone, `bars_back`,
+  and `timeframe_bars_back`. The two-argument `(timeframe, bars_back)` form is
+  also accepted. Session strings support comma-separated `HHmm-HHmm` periods,
+  optional Sunday=1 day digits, and overnight sessions. Out-of-session and
+  pre-history bars return `na`; session-end closes are clipped to that session.
+- Timezones accept IANA names and fixed `UTC`/`GMT` offsets. Invalid zones are
+  errors, not silent UTC fallbacks. `timestamp` accepts numeric calendar
+  components (optionally prefixed by timezone) or a date string in ISO/RFC3339
+  and common English day-month-year forms.
+- `timeframe.change` compares current and previous time buckets, rather than
+  counting chart bars. The first available bar returns false.
+- Seconds and tick resolutions are classified as intraday; tick resolutions
+  have no predictable time boundary. `timeframe.from_seconds` rounds up to a
+  representable resolution, capped at `12M`. Month conversion in
+  `timeframe.in_seconds` uses 2,628,003 seconds.
+
+The base Provider interface still supplies value series. Without a
+`BarTimeProvider` / `SetBarTimes`, bar times use the engine's start time and
+timeframe. Without symbol timezone metadata, time calculations use UTC.
+Timestamp arrays must match the base-series length and have strictly increasing
+opens and closes after opens. Helpers do not infer holidays, missing bars, or
+exchange schedules. Future projected times use the configured chart step.
+
+### Runtime Errors and Ticker IDs
+
+`runtime.error(message)` aborts execution with the bar index, active symbol,
+and message.
+
+`ticker.new`, `ticker.modify`, `ticker.standard`, `ticker.inherit`, and
+`ticker.heikinashi` construct, modify, and strip ticker identifiers. Session,
+adjustment, backadjustment, and settlement modifiers use deterministic encoded
+JSON IDs. Heikin Ashi uses PineTS-compatible `;heikinashi` routing; it does not
+transform bars. Providers must supply the data for modified ticker IDs.
+Alternative-chart constructors `ticker.renko`, `kagi`, `linebreak`, and
+`pointfigure` preserve their validated parameters in engine-local opaque IDs.
+`ParseTickerID` exposes those descriptors to providers. These IDs are not a
+promise of TradingView server wire-format compatibility: the provider must
+serve the requested transformed bars, never ordinary candles under another name.
+
+### Libraries
+
+`library()`, versioned `import author/name/version as alias`, and exported
+functions, methods, types, and enums are supported. Configure a `LibraryResolver`
+before compilation; linked bytecode requires no resolver at execution time.
+Imports are namespaced, private helpers and dependencies stay out of the public
+namespace, and scalar constant library globals are isolated.
+
+Libraries with executable/data-dependent globals are rejected. Cycles, alias
+collisions, excessive nesting/module count, and oversized sources are errors.
+No filesystem or network loading is implicit.
+
+### Historical Requests
+
+`request.security` evaluates an expression against an isolated requested
+symbol/timeframe. `SecurityDataProvider` supplies value series and actual bar
+timestamps. Chart providers are not switched back and forth between timeframes.
+Same-context requests can use the chart data without an additional provider.
+
+- Default `barmerge.lookahead_off` exposes only confirmed requested bars.
+  `lookahead_on` deliberately exposes the selected historical period early.
+- `barmerge.gaps_off` carries the last available value; `gaps_on` emits on newly
+  aligned requested boundaries.
+- Lower-timeframe `request.security` selects the first intrabar with
+  lookahead on, the last with it off.
+- `request.security_lower_tf` returns closed intrabars in chronological arrays;
+  tuple expressions return a tuple of arrays. An equal timeframe returns the
+  current bar as one intrabar.
+- `ignore_invalid_symbol`, `ignore_invalid_timeframe` (lower-TF), and
+  `calc_bars_count` are supported. Ignored invalid symbols return `na`.
+- Global expression dependencies, functions, parameters, and supported global
+  collection mutations are evaluated in the requested context. Unrelated
+  plots/alerts/callbacks are not replayed. Mutable results are snapshotted.
+- Limits: 40 data contexts, 128 expression streams, nested depth 16, bounded
+  collection snapshots. Arbitrary mutable function-local captures and
+  cross-currency conversion are not implemented; unsupported use is an error.
+
+### Footprints
+
+`request.footprint(ticks_per_row[, va_percent[, imbalance_percent]])` uses
+genuine executed buy/sell levels supplied by `FootprintProvider`. No provider
+or no data returns `na`; usable data requires explicit `syminfo.mintick`.
+
+Rows share a tick grid anchored at zero and cover provided levels plus the
+candle range. POC ties favor the center, then the lower row. The value area
+grows from POC toward the larger adjacent row, stopping before exceeding the
+requested share (with a 0.01 volume tolerance). Imbalances are diagonal between
+neighboring rows. More than 2,000 rows returns `na`; invalid source levels error.
+
+`footprint.buy_volume`, `sell_volume`, `total_volume`, `delta`, `poc`, `vah`,
+`val`, `rows`, and `get_row_by_price` are available. `volume_row` exposes
+`up_price`, `down_price`, `buy_volume`, `sell_volume`, `total_volume`, `delta`,
+`has_buy_imbalance`, and `has_sell_imbalance`. Namespace and receiver syntax work.
+Rows are immutable snapshots; `rows()` returns a fresh array. Inside a security
+expression, footprints describe the requested context's own bars.
+
+### Native Historical Strategies — Limited Broker Model
+
+`strategy()` enables a native historical broker. It requires provider OHLC,
+`syminfo.mintick`, `syminfo.pointvalue`, and explicitly disabled margins:
+
+```pine
+strategy("Example", initial_capital = 10000, margin_long = 0, margin_short = 0)
+if bar_index == 0
+    strategy.entry("L", strategy.long, qty = 1)
+if bar_index == 5
+    strategy.close("L")
+net = strategy.netprofit
+```
+
+Implemented behavior:
+
+- Market orders fill on the next bar's open by default. Pending limit, stop,
+  and stop-limit orders use a deterministic OHLC path; gaps fill at the opening
+  price when marketable. Stop-limit activation is distinct from its limit fill.
+- `entry` supports pyramiding and reversal; `order` nets its quantity against
+  existing positions. `exit` supports absolute or tick-relative take-profit /
+  stop-loss brackets with first-hit OCO behavior. `close`, `close_all`,
+  `cancel`, and `cancel_all` are supported.
+- `close(..., immediately=true)` closes during evaluation;
+  `process_orders_on_close` processes eligible orders after evaluation, without
+  a second script calculation.
+- Fixed/cash/equity-percent sizing, commission modes, slippage, and partial
+  closes are supported. Cash/percent sizing requires `syminfo.mincontract`;
+  default order quantity is calculated at the fill price.
+- Explicit-quantity OCA cancellation/reduction groups, `risk.allow_entry_in`,
+  and `risk.max_position_size` are supported.
+- Position/account metrics, open/closed trade counts, profits/fees, and
+  per-trade getters are available. Conversion helpers support same-currency
+  values; cross-currency broker accounting is not implemented.
+
+**Not full TradingView broker parity:** margin liquidation, trailing stops,
+tick/fill recalculation, bar magnifier, limit verification, combined relative/
+absolute exit legs, full FIFO reassignment/reservations, order-fill alerts, and
+four remaining risk rules are not implemented. Unsupported options error rather
+than silently approximating these features. See the remaining checklist in
+[api-parity.md](api-parity.md). Ledger/excursion statistics have deterministic
+tests but are not certified against every TradingView reporting convention.
 
 ### Built-in Type Placeholders
 
@@ -332,22 +604,21 @@ Hookable drawing calls can be overridden with `RegisterFunctionWithParamNames`, 
 
 ## Unsupported Features
 
-The following Pine Script features are not implemented in Pinescription. Attempting to use them without a registered custom function hook will produce a runtime error: `unsupported feature: ...`
+The following areas remain incomplete or unsupported. Exact-name strategy and
+request hooks can override native behavior or provide unsupported functions.
 
 ### Strategy APIs
 
-All unregistered `strategy.*` functions return an unsupported feature error:
-
-- `strategy.entry`, `strategy.exit`, `strategy.order`
-- `strategy.position`, `strategy.closedtrades`, `strategy.opentrades`
-- And all other strategy-related functions
+The native broker supports the subset above. Advanced options and remaining risk
+rules return explicit errors. Strategy operations require a `strategy()`
+declaration unless overridden by a registered host hook.
 
 ### Request APIs
 
-All unregistered `request.*` functions return an unsupported feature error:
-
-- `request.security`, `request.financial`, `request.earnings`
-- And all other request-related functions
+`request.security`, `request.security_lower_tf`, and `request.footprint` have
+native implementations with the limits above. Financial, economic,
+corporate-action, Quandl, currency-rate, and seed data functions remain
+unsupported without host hooks. Data-less placeholders are not treated as data.
 
 Exact-name custom function hooks can provide selected request behavior. Use `RegisterFunctionWithParamNames` when the Pine call may use named arguments, such as `request.security(symbol = ..., timeframe = ..., expression = ...)`.
 

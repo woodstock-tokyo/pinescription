@@ -34,7 +34,9 @@ func parseProgram(input string) (Program, error) {
 		if err != nil {
 			return Program{}, err
 		}
-		if stmt.Kind == "function" {
+		if stmt.Import != nil {
+			program.Imports = append(program.Imports, *stmt.Import)
+		} else if stmt.Kind == "function" {
 			program.Functions[stmt.Func.Name] = *stmt.Func
 		} else if stmt.Kind == "type" {
 			if stmt.Type != nil {
@@ -42,6 +44,12 @@ func parseProgram(input string) (Program, error) {
 			}
 		} else {
 			program.Stmts = append(program.Stmts, stmt)
+			if stmt.Expr != nil && stmt.Expr.Kind == "call" && stmt.Expr.Left != nil && stmt.Expr.Left.Name == "library" {
+				if program.Library {
+					return Program{}, fmt.Errorf("duplicate library declaration")
+				}
+				program.Library = true
+			}
 		}
 		p.skipNewlines()
 	}
@@ -93,8 +101,24 @@ func (p *parser) parseStmt() (Stmt, error) {
 		case "type":
 			return p.parseTypeDecl()
 		case "enum":
-			return Stmt{}, fmt.Errorf("line %d: %s declarations are not supported", t.Line, t.Text)
-		case "import", "export", "do", "as", "in":
+			return p.parseEnumDecl()
+		case "import":
+			return p.parseImport()
+		case "export":
+			p.next()
+			stmt, err := p.parseStmt()
+			if err != nil {
+				return Stmt{}, err
+			}
+			if stmt.Func != nil {
+				stmt.Func.Exported = true
+			} else if stmt.Type != nil {
+				stmt.Type.Exported = true
+			} else {
+				return Stmt{}, fmt.Errorf("line %d: export requires a function, method, type, or enum", t.Line)
+			}
+			return stmt, nil
+		case "do", "as", "in":
 			return Stmt{}, fmt.Errorf("line %d: keyword %q is recognized but not supported", t.Line, t.Text)
 		case "method":
 			p.next()
@@ -379,6 +403,54 @@ func (p *parser) parseTypeDecl() (Stmt, error) {
 	}
 	typeDef := &TypeDef{Name: nameTok.Text, Fields: fields}
 	return Stmt{Kind: "type", Type: typeDef}, nil
+}
+
+func (p *parser) parseEnumDecl() (Stmt, error) {
+	p.next()
+	name, err := p.expect(tokIdent)
+	if err != nil {
+		return Stmt{}, err
+	}
+	if err = p.expectNewlineAndIndent(); err != nil {
+		return Stmt{}, err
+	}
+	td := &TypeDef{Name: name.Text, Enum: true}
+	seen := map[string]bool{}
+	for !p.match(tokDedent) && !p.match(tokEOF) {
+		p.skipNewlines()
+		if p.match(tokDedent) || p.match(tokEOF) {
+			break
+		}
+		field, err := p.expect(tokIdent)
+		if err != nil {
+			return Stmt{}, err
+		}
+		if seen[field.Text] {
+			return Stmt{}, fmt.Errorf("duplicate enum field %s.%s", name.Text, field.Text)
+		}
+		seen[field.Text] = true
+		title := field.Text
+		if p.match(tokAssign) {
+			p.next()
+			label, err := p.expect(tokString)
+			if err != nil {
+				return Stmt{}, fmt.Errorf("enum title must be a string: %w", err)
+			}
+			title = label.Text
+		}
+		td.Fields = append(td.Fields, TypeField{Name: field.Text, Title: title})
+		if !p.match(tokNewline) && !p.match(tokDedent) && !p.match(tokEOF) {
+			return Stmt{}, fmt.Errorf("line %d: expected end of enum member", p.peek().Line)
+		}
+		p.skipNewlines()
+	}
+	if _, err = p.expect(tokDedent); err != nil {
+		return Stmt{}, err
+	}
+	if len(td.Fields) == 0 {
+		return Stmt{}, fmt.Errorf("enum %s must contain a member", name.Text)
+	}
+	return Stmt{Kind: "type", Type: td}, nil
 }
 
 func (p *parser) parseIf() (Stmt, error) {

@@ -210,7 +210,7 @@ func (r *Runtime) getSeries(symbol, valueType string) (SeriesExtended, error) {
 	}
 	candidates := []string{valueType}
 	defaultVT := r.defaultValueTypeForSymbol(symbol)
-	if defaultVT != "" && defaultVT != valueType {
+	if !r.strictSeries && defaultVT != "" && defaultVT != valueType {
 		candidates = append(candidates, defaultVT)
 	}
 

@@ -101,13 +101,23 @@ The streaming execution model updates only the active bar state, avoiding full r
 
 - **Language Core**: `var`/`const` declarations, `if`/`else`/`for`/`while`/`switch`, functions, arrays, tuples, matrices
 - **30+ Built-in Indicators**: SMA, EMA, RSI, ATR, Bollinger Bands, crossover, crossunder, stdev, correlation...
-- **Full `ta.*` Namespace**: `ta.sma`, `ta.ema`, `ta.rsi`, `ta.atr`, `ta.bb`...
+- **TA and Volume APIs**: Moving averages, oscillators, RCI, anchored VWAP/bands,
+  OBV, accumulation/distribution, and other volume series
 - **`math.*` Namespace**: `math.abs`, `math.pow`, `math.sqrt`, `math.log`, `math.sin`...
 - **Array Operations**: 25+ methods including `push`, `pop`, `sort`, `sum`, `avg`...
 - **Matrix Operations**: Linear algebra helpers, eigenvalues, determinant, transpose...
 - **String Operations**: `str.format`, `str.split`, `str.replace`, `str.contains`...
 - **Market Data**: Multi-symbol queries (`close_of`, `sma_of`...), history indexing (`close[1]`)
 - **Alerts**: `alert()` and `alertcondition()` with custom sinks
+- **Pre-Execution Inputs**: Discover parameters and resolve price, text,
+  timeframe, enum, and source choices before runtime creation
+- **Optional Market Context**: Provider-supplied symbol metadata, actual bar
+  timestamps, and explicit session schedules
+- **Versioned Libraries**: Explicit source resolution and linked imports/exports
+- **Historical Requests and Order Flow**: Isolated security calculations,
+  lower-timeframe arrays, and provider-backed footprint rows
+- **Historical Strategy Broker**: Basic order execution and trade accounting,
+  with [explicit limitations](docs/features.md#native-historical-strategies--limited-broker-model)
 
 See [docs/features.md](docs/features.md) for the complete feature reference.
 
@@ -120,6 +130,7 @@ See [docs/features.md](docs/features.md) for the complete feature reference.
 | [API Reference](docs/api.md) | Complete API surface: Engine, Runtime, Provider, Alerts |
 | [Architecture and Design](docs/architecture.md) | Compilation pipeline, execution flow, streaming evaluation model |
 | [Feature Reference](docs/features.md) | Exhaustive list of supported Pine Script v6 features |
+| [PineTS API Work Order](docs/api-parity.md) | Completed additions, explicit exclusions, and remaining API work |
 
 ---
 
@@ -149,13 +160,21 @@ Common series keys include `AAPL|close`, `AAPL|volume`, etc.
 
 ---
 
-## Unsupported in Open Source Version - Need Custom Function Hooks
+## Remaining Gaps and Custom Function Hooks
 
-- Strategy APIs (`strategy.entry`, `strategy.exit`...)
-- Request APIs (`request.security`, `request.financial`...)
+- Advanced strategy behavior: margin liquidation, trailing stops, recalculation,
+  cross-currency accounting, and remaining risk rules
+- Financial/economic/corporate-action request data (`request.financial`...)
 - Plot APIs (`plot`, `plotshape`...)
 
-These return explicit runtime errors when used unless you register an exact-name custom function hook. Use `RegisterFunction("strategy.order", fn)` for positional-only hooks, or `RegisterFunctionWithParamNames(...)` when the Pine call may use named arguments, for example `RegisterFunctionWithParamNames("plot", []string{"series", "title", "color"}, fn)` or `RegisterFunctionWithParamNames("request.security", []string{"symbol", "timeframe", "expression"}, fn)`. Validation still rejects parser-reserved names, non-hookable implemented built-ins, and Pine type keywords such as `int`, `float`, `color`, and `table`.
+Unsupported behavior returns explicit errors. Native historical strategies,
+`request.security`, `request.security_lower_tf`, and `request.footprint` are now
+available for the documented subset; this is not full TradingView parity.
+Exact-name strategy/request hooks retain precedence, including
+`RegisterFunction("strategy.order", fn)` for positional hooks and
+`RegisterFunctionWithParamNames(...)` for host-defined named arguments. Plot
+hooks continue to work as before. Ordinary non-hookable built-ins and reserved
+names remain protected.
 
 Host applications may also register selected drawing-object hook points such as `polyline.new`, `box.new`, `label.new`, `chart.point.from_index`, `table.cell`, and `table.clear`. Pinescription provides compatibility stubs for those APIs, but a host hook can capture the calls and render the resulting objects outside the runtime.
 

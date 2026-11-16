@@ -12,16 +12,37 @@ import (
 )
 
 func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
+	if input, ok := r.inputBindings[expr]; ok {
+		if input.source != nil {
+			return r.eval(input.source)
+		}
+		return input.value, nil
+	}
 	if expr.Left == nil || expr.Left.KOp != exprKindIdent {
 		return nil, errors.New("call target must be identifier")
 	}
 	name := expr.Left.Name
+	if name == "strategy" {
+		if value, ok, err := r.callRegisteredFunction(name, expr.Args); ok || err != nil {
+			return value, err
+		}
+		return r.evalStrategyCall(expr)
+	}
 	if isUnsupportedFeatureCallName(name) {
 		if strings.HasPrefix(name, "alert") {
 			return nil, fmt.Errorf("unsupported feature: %s", name)
 		}
 		if v, ok, err := r.callRegisteredFunction(name, expr.Args); ok || err != nil {
 			return v, err
+		}
+		if name == "request.security" || name == "request.security_lower_tf" {
+			return r.evalSecurity(expr)
+		}
+		if name == "request.footprint" {
+			return r.evalFootprintRequest(expr)
+		}
+		if strings.HasPrefix(name, "strategy.") {
+			return r.evalStrategyCall(expr)
 		}
 		return nil, fmt.Errorf("unsupported feature: %s", name)
 	}
@@ -70,6 +91,9 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 		}
 	}
 	if fn, ok := r.program.Functions[name]; ok {
+		prev := r.scriptCallPath
+		r.scriptCallPath += fmt.Sprintf("/%p", expr)
+		defer func() { r.scriptCallPath = prev }()
 		result, err := r.callScriptFunction(fn, rawArgs, args)
 		return result, err
 	}
@@ -99,7 +123,18 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 					return v, err
 				}
 			}
-			if fn, ok := r.program.Functions[methodName]; ok {
+			fn, found := r.program.Functions[methodName]
+			if !found {
+				if instance, ok := recv.(*customTypeInstance); ok {
+					if dot := strings.LastIndex(instance.TypeName, "."); dot >= 0 {
+						fn, found = r.program.Functions[instance.TypeName[:dot+1]+methodName]
+					}
+				}
+			}
+			if found {
+				prev := r.scriptCallPath
+				r.scriptCallPath += fmt.Sprintf("/%p", expr)
+				defer func() { r.scriptCallPath = prev }()
 				methodRawArgs := make([]*Expr, 0, len(rawArgs)+1)
 				methodRawArgs = append(methodRawArgs, nil)
 				methodRawArgs = append(methodRawArgs, rawArgs...)
@@ -167,6 +202,14 @@ func (r *Runtime) callMethodWithNamedArgs(name string, argExprs []*Expr) (interf
 }
 
 func (r *Runtime) isKnownDottedCallName(name string) bool {
+	if _, ok := r.program.Functions[name]; ok {
+		return true
+	}
+	if typeName, ok := splitTypeConstructorCallName(name); ok {
+		if _, exists := r.program.Types[typeName]; exists {
+			return true
+		}
+	}
 	if !strings.Contains(name, ".") {
 		return false
 	}
@@ -412,7 +455,7 @@ func splitTypeConstructorCallName(name string) (string, bool) {
 		return "", false
 	}
 	typeName := strings.TrimSuffix(name, ".new")
-	if typeName == "" || strings.Contains(typeName, ".") {
+	if typeName == "" {
 		return "", false
 	}
 	return typeName, true
@@ -420,6 +463,10 @@ func splitTypeConstructorCallName(name string) (string, bool) {
 
 func methodBuiltinNameForReceiver(receiver interface{}, method string) string {
 	switch v := receiver.(type) {
+	case *footprintValue:
+		return "footprint." + method
+	case *volumeRow:
+		return "volume_row." + method
 	case []interface{}, *pineArray:
 		return "array." + method
 	case *Matrix:
@@ -442,6 +489,9 @@ func methodBuiltinNameForReceiver(receiver interface{}, method string) string {
 }
 
 func (r *Runtime) instantiateType(typeDef TypeDef, rawArgs []*Expr, args []interface{}) (interface{}, error) {
+	if typeDef.Enum {
+		return nil, fmt.Errorf("enum %s has no constructor", typeDef.Name)
+	}
 	if len(args) > len(typeDef.Fields) {
 		return nil, fmt.Errorf("%s.new expects at most %d args", typeDef.Name, len(typeDef.Fields))
 	}

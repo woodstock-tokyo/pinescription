@@ -17,7 +17,7 @@ import (
 	series "github.com/woodstock-tokyo/pinescription/series"
 )
 
-var arrayNewGenericRe = regexp.MustCompile(`array\.new\s*<\s*(int|float|bool|string|box|label|polyline|chart\.point)\s*>`)
+var arrayNewGenericRe = regexp.MustCompile(`array\.new\s*<\s*(int|float|bool|string|color|line|linefill|table|box|label|polyline|chart\.point)\s*>`)
 
 func normalizePineScriptCompat(source string) string {
 	return arrayNewGenericRe.ReplaceAllStringFunc(source, func(m string) string {
@@ -111,21 +111,29 @@ type EngineLogEntry struct {
 // Use NewEngine to create an instance, then configure providers and options
 // before calling Compile and Execute.
 type Engine struct {
-	providers        []Provider
-	functions        map[string]UserFunction
-	functionParams   map[string]callParamSpec
-	defaultSymbol    string
-	defaultValueType string
-	timeframe        string
-	session          string
-	currentTime      time.Time
-	startTime        time.Time
-	lastRuntime      *Runtime
-	logs             []EngineLogEntry
-	alertSink        func(AlertEvent)
-	cachedBytecode   []byte
-	cachedProgram    Program
-	cacheValid       bool
+	providers         []Provider
+	functions         map[string]UserFunction
+	functionParams    map[string]callParamSpec
+	defaultSymbol     string
+	defaultValueType  string
+	timeframe         string
+	session           string
+	currentTime       time.Time
+	startTime         time.Time
+	lastRuntime       *Runtime
+	logs              []EngineLogEntry
+	alertSink         func(AlertEvent)
+	cachedBytecode    []byte
+	cachedProgram     Program
+	cacheValid        bool
+	inputParameters   map[string]interface{}
+	inputResolver     InputResolver
+	symbolInfo        map[string]SymbolInfo
+	barTimes          []BarTime
+	marketSessions    map[string]MarketSessions
+	libraryResolver   LibraryResolver
+	securityProvider  SecurityDataProvider
+	footprintProvider FootprintProvider
 }
 
 // AlertEvent describes an alert triggered by a Pine Script alert() call during execution.
@@ -241,6 +249,9 @@ func isImplementedBuiltinFunctionName(name string) bool {
 		return true
 	}
 	_, ok := implementedBuiltinFunctionNames[name]
+	if !ok {
+		_, ok = additionalBuiltinNames[name]
+	}
 	return ok
 }
 
@@ -657,6 +668,9 @@ func (e *Engine) Compile(pinescript string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := e.linkLibraries(&program); err != nil {
+		return nil, err
+	}
 	if err := validateNoNumericToBoolAutoConversion(&program); err != nil {
 		return nil, err
 	}
@@ -694,6 +708,10 @@ func (e *Engine) Execute(bytecode []byte) (interface{}, error) {
 // ClearRuntime. The caller must not mutate the returned Runtime.
 func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, error) {
 	program, err := e.decodeProgramCached(bytecode)
+	if err != nil {
+		return nil, nil, err
+	}
+	inputs, err := e.prepareInputs(program)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -738,6 +756,10 @@ func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, err
 	if err != nil {
 		return nil, nil, err
 	}
+	context, err := e.marketContext(catalog.providerBySymbol[activeSymbol], activeSymbol, timeframe, baseSeries.Length())
+	if err != nil {
+		return nil, nil, err
+	}
 	currentTime := e.currentTime
 	if currentTime.IsZero() {
 		currentTime = time.Now().UTC()
@@ -753,6 +775,10 @@ func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, err
 	seriesByKey[makeSeriesKey(activeSymbol, activeValueType)] = baseSeries
 	rt := newRuntime(program, functions, seriesByKey, catalog.valueTypesBySymbol, activeSymbol, activeValueType, timeframe, session, currentTime, startTime, baseSeries.Length(), catalog.fetchSeries, e.appendLog, e.alertSink)
 	rt.userFnParamSpecs = functionParams
+	rt.inputBindings = inputs
+	rt.applyMarketContext(context)
+	rt.requests = &requestSession{loader: e.securityLoader(catalog), data: map[string]SecurityData{}, failures: map[string]error{}}
+	rt.footprintLoader = e.footprintSource(catalog)
 	for key := range neededKeys {
 		symbol, valueType, ok := splitSeriesKey(key)
 		if !ok {
@@ -767,7 +793,13 @@ func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, err
 
 	for i := 0; i < baseSeries.Length(); i++ {
 		rt.SetBarIndex(i)
+		if err := rt.strategyBeginBar(); err != nil {
+			return nil, nil, err
+		}
 		if err := rt.execTopLevel(); err != nil {
+			return nil, nil, err
+		}
+		if err := rt.strategyEndBar(); err != nil {
 			return nil, nil, err
 		}
 		if err := rt.commitBar(); err != nil {
@@ -816,12 +848,7 @@ func inferStartTime(current time.Time, timeframe string, bars int) time.Time {
 	if bars <= 1 {
 		return current
 	}
-	seconds, ok := timeframeInSeconds(timeframe)
-	if !ok || seconds <= 0 {
-		seconds = 60
-	}
-	step := time.Duration(seconds) * time.Second
-	return current.Add(-step * time.Duration(bars-1))
+	return shiftTimeframe(current, -(bars - 1), timeframe)
 }
 
 func makeSeriesKey(symbol, valueType string) string {
