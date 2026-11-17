@@ -173,7 +173,7 @@ func (r *Runtime) builtinVWAP(raw []*Expr, args []interface{}) (interface{}, err
 		current = vwapBar{started: true}
 	}
 	current.date = date
-	price := math.NaN()
+	var price float64
 	if len(args) > 0 {
 		var ok bool
 		price, ok = toFloat(args[0])
