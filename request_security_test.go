@@ -129,6 +129,16 @@ func TestSecurityRetainsAssignedMutationsAndAliases(t *testing.T) {
 		{"alias_method", "a = array.from(close)\nb = a\nb.push(5)", "array.sum(a)", 205},
 		{"alias_chain", "a = array.from(close)\nb = a\nc = b\nremoved = c.pop()", "array.size(a)", 0},
 		{"alias_reverse", "a = array.from(close)\nb = a\na.push(5)", "array.sum(b)", 205},
+		{"script_parameter", "appendFive(x) => array.push(x,5)\na = array.from(close)\nappendFive(a)", "array.sum(a)", 205},
+		{"nested_script_parameter", "appendFive(x) => array.push(x,5)\nappendIndirect(x) => appendFive(x)\na = array.from(close)\nappendIndirect(a)", "array.sum(a)", 205},
+		{"script_local_alias", "appendFive(x) =>\n    y = x\n    array.push(y,5)\na = array.from(close)\nappendFive(a)", "array.sum(a)", 205},
+		{"script_named_argument", "appendFive(x) => array.push(x,5)\na = array.from(close)\nremoved = appendFive(x=a)", "array.sum(a)", 205},
+		{"switch_mutation", "a = array.from(close,5)\nremoved = switch\n    close > 0 => array.pop(a)\n    => 0", "array.sum(a)", 200},
+		{"switch_default_mutation", "a = array.from(close,5)\nremoved = switch\n    close < 0 => 0\n    => array.pop(a)", "array.sum(a)", 200},
+		{"switch_selector_mutation", "a = array.from(close,5)\nremoved = switch array.pop(a)\n    5 => 0\n    => 1", "array.sum(a)", 200},
+		{"switch_match_mutation", "a = array.from(close,5)\nremoved = switch close\n    array.pop(a) => 0\n    => 1", "array.sum(a)", 200},
+		{"map_alias", "m = map.new()\nmap.put(m,\"value\",close)\nn = m\nmap.put(n,\"extra\",5)", `map.get(m,"value")+map.get(m,"extra")`, 205},
+		{"matrix_alias", "m = matrix.new_float(1,1,close)\nn = m\nmatrix.set(n,0,0,close+5)", "matrix.get(m,0,0)", 205},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, _ := requestTestEngine(10, 20, 30, 40)
@@ -140,6 +150,41 @@ func TestSecurityRetainsAssignedMutationsAndAliases(t *testing.T) {
 				t.Fatalf("got %v, %v; want %v", got, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestSecurityDoesNotReplayPureScriptCalls(t *testing.T) {
+	e, _ := requestTestEngine(10, 20, 30, 40)
+	calls := 0
+	e.RegisterFunction("effect", func(...interface{}) (interface{}, error) {
+		calls++
+		return nil, nil
+	})
+	code, err := e.Compile(`observe(x) => effect()
+a = array.from(close)
+observe(a)
+result = request.security("OTHER","120",array.sum(a))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.Execute(code); err != nil || got != float64(200) {
+		t.Fatalf("got %v, %v; want 200", got, err)
+	}
+	if calls != 4 {
+		t.Fatalf("unrelated script call replayed in request: %d callbacks", calls)
+	}
+}
+
+func TestSecurityScalarCopyDoesNotCreateAliasCycle(t *testing.T) {
+	e, _ := requestTestEngine(10, 20, 30, 40)
+	code, err := e.Compile(`src = close
+result = src
+result := request.security("OTHER","120",src)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.Execute(code); err != nil || got != float64(200) {
+		t.Fatalf("got %v, %v; want 200 without alias cycle", got, err)
 	}
 }
 func TestSecurityAlignmentIsolationAndDependencies(t *testing.T) {

@@ -165,6 +165,9 @@ func discoverInputs(program Program) ([]InputParameter, []inputCall, error) {
 	var walkExpr func(*Expr, string)
 	var walkStmts func([]Stmt)
 	walkBlock := func(stmts []Stmt) {
+		if len(stmts) == 0 {
+			return
+		}
 		parent := env
 		env = maps.Clone(parent)
 		walkStmts(stmts)
@@ -210,14 +213,16 @@ func discoverInputs(program Program) ([]InputParameter, []inputCall, error) {
 			walkExpr(stmt.SwitchExpr, "")
 			walkBlock(stmt.Then)
 			walkBlock(stmt.Else)
-			bodyEnv := env
-			env = maps.Clone(env)
-			delete(env, stmt.ForVar)
-			for _, name := range stmt.TupleNames {
-				delete(env, name)
+			if len(stmt.Body) > 0 {
+				bodyEnv := env
+				env = maps.Clone(env)
+				delete(env, stmt.ForVar)
+				for _, name := range stmt.TupleNames {
+					delete(env, name)
+				}
+				walkStmts(stmt.Body)
+				env = bodyEnv
 			}
-			walkStmts(stmt.Body)
-			env = bodyEnv
 			walkBlock(stmt.Default)
 			for _, c := range stmt.Cases {
 				walkExpr(c.Match, "")
@@ -249,6 +254,11 @@ func discoverInputs(program Program) ([]InputParameter, []inputCall, error) {
 		env = maps.Clone(globals)
 		for _, param := range fn.Params {
 			delete(env, param)
+		}
+		// Defaults belong to the function declaration environment, not to
+		// the environment after walking its local declarations.
+		for i := range fn.Params {
+			walkExpr(fn.ParamDefaults[i], "")
 		}
 		walkExpr(fn.Expr, "")
 		walkStmts(fn.Body)

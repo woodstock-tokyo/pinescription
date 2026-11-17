@@ -169,3 +169,31 @@ for n = 0 to 1
 		})
 	}
 }
+
+func TestInputsInFunctionParameterDefaults(t *testing.T) {
+	e := NewEngine()
+	code, err := e.Compile(`const int n = 2
+pick(x = input.int(n, minval=1)) =>
+    const int n = 9
+    x
+result = pick()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defs, err := e.InputParameters(code)
+	if err != nil || len(defs) != 1 || defs[0].Default != float64(2) {
+		t.Fatalf("got %v, %v; want one default input with value 2", defs, err)
+	}
+	e.SetInputParameters(map[string]interface{}{defs[0].ID: 7})
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 1))
+	if got, err := e.Execute(code); err != nil || got != float64(7) {
+		t.Fatalf("got %v, %v; want bound default 7", got, err)
+	}
+	invalid, err := e.Compile(`unused(x = input.int(0,minval=1)) => x`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = e.InputParameters(invalid); err == nil {
+		t.Fatal("invalid input metadata in unused function default accepted")
+	}
+}

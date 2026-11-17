@@ -296,6 +296,134 @@ func timeBucket(t time.Time, tf string, anchor time.Time) (time.Time, time.Time,
 	}
 }
 
+func floorDivide(n, d int) int {
+	q := n / d
+	if n%d < 0 {
+		q--
+	}
+	return q
+}
+
+// offsetTimeBucket locates buckets, not independently shifted endpoints.
+// Calendar work is bounded by one Gregorian cycle, regardless of the offset.
+func offsetTimeBucket(open, close time.Time, tf string, anchor time.Time, back int) (time.Time, time.Time, error) {
+	if back == 0 {
+		return open, close, nil
+	}
+	base, mult, _ := parseTimeframe(tf)
+	loc := open.Location()
+	if base == "M" {
+		perYear := (12 + mult - 1) / mult
+		index := (int(open.Month())-1)/mult - back
+		year := open.Year() + floorDivide(index, perYear)
+		index -= floorDivide(index, perYear) * perYear
+		point := time.Date(year, time.Month(index*mult+1), 1, 0, 0, 0, 0, loc)
+		return timeBucket(point, tf, time.Time{})
+	}
+	if base == "D" || base == "W" {
+		first := func(year int) time.Time {
+			t := time.Date(year, 1, 1, open.Hour(), open.Minute(), 0, 0, loc)
+			if base == "W" {
+				t = t.AddDate(0, 0, (8-int(t.Weekday()))%7)
+			}
+			return t
+		}
+		count := func(year int) int {
+			days := time.Date(year, 12, 31, 0, 0, 0, 0, time.UTC).YearDay()
+			if base == "W" {
+				days = (days - first(year).YearDay() + first(year+1).YearDay()) / 7
+			}
+			return (days + mult - 1) / mult
+		}
+		year := open.Year()
+		index := (open.YearDay()-1)/mult - back
+		cycle := 303*((365+mult-1)/mult) + 97*((366+mult-1)/mult)
+		if base == "W" {
+			index = (open.YearDay()-first(year).YearDay())/(7*mult) - back
+			cycle = 329*((52+mult-1)/mult) + 71*((53+mult-1)/mult)
+		}
+		cycles := index / cycle
+		year += cycles * 400
+		index -= cycles * cycle
+		for index < 0 {
+			year--
+			index += count(year)
+		}
+		for index >= count(year) {
+			index -= count(year)
+			year++
+		}
+		days := index * mult
+		if base == "W" {
+			days *= 7
+		}
+		point := first(year).AddDate(0, 0, days)
+		bucketAnchor := time.Time{}
+		if !anchor.IsZero() && base == "D" {
+			bucketAnchor = point
+		}
+		return timeBucket(point, tf, bucketAnchor)
+	}
+	if !anchor.IsZero() {
+		// Session-aligned duration buckets have a constant nominal width.
+		point := shiftTimeframe(open, -back, tf).In(loc)
+		return point, shiftTimeframe(point, 1, tf).In(loc), nil
+	}
+	seconds, _ := timeframeInSeconds(tf)
+	step := time.Duration(seconds) * time.Second
+	perDay := (86400 + seconds - 1) / seconds
+	day := time.Date(open.Year(), open.Month(), open.Day(), 0, 0, 0, 0, loc)
+	index := int(open.Sub(day)/step) - back
+	// Skip ordinary days in bulk. Only timezone transitions require inspection;
+	// UTC and fixed-offset zones take constant work even for a million bars.
+	for {
+		end := day.AddDate(0, 0, 1)
+		count := int((end.Sub(day) + step - 1) / step)
+		if index >= 0 && index < count {
+			point := day.Add(time.Duration(index) * step)
+			return timeBucket(point, tf, time.Time{})
+		}
+		days := floorDivide(index, perDay)
+		if days == 0 {
+			days = 1
+		}
+		target := day.AddDate(0, 0, days)
+		index -= durationBucketDays(day, target, step, perDay)
+		day = target
+	}
+}
+
+func calendarDayNumber(t time.Time) int64 {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC).Unix() / 86400
+}
+
+// Count day-aligned duration buckets, adjusting only days whose length differs
+// because of an offset transition. No loop over individual days or buckets.
+func durationBucketDays(start, end time.Time, step time.Duration, perDay int) int {
+	if end.Before(start) {
+		return -durationBucketDays(end, start, step, perDay)
+	}
+	total := int(calendarDayNumber(end)-calendarDayNumber(start)) * perDay
+	seen := map[int64]bool{}
+	for cursor := start; cursor.Before(end); {
+		_, boundary := cursor.ZoneBounds()
+		if boundary.IsZero() || !boundary.After(cursor) || !boundary.Before(end) {
+			break
+		}
+		for _, point := range []time.Time{boundary.Add(-time.Nanosecond), boundary} {
+			date := time.Date(point.Year(), point.Month(), point.Day(), 0, 0, 0, 0, start.Location())
+			key := calendarDayNumber(date)
+			if !date.Before(start) && date.Before(end) && !seen[key] {
+				length := date.AddDate(0, 0, 1).Sub(date)
+				total += int((length+step-1)/step) - perDay
+				seen[key] = true
+			}
+		}
+		cursor = boundary
+	}
+	return total
+}
+
 func (r *Runtime) timeFunction(args []interface{}, closing bool) (interface{}, error) {
 	if len(args) > 5 {
 		return nil, fmt.Errorf("time/time_close expects up to 5 args")
@@ -380,35 +508,9 @@ func (r *Runtime) timeFunction(args []interface{}, closing bool) (interface{}, e
 		return nil, err
 	}
 	if tfBack != 0 {
-		base, _, _ := parseTimeframe(tf)
-		switch base {
-		case "M", "W", "D":
-			// Calendar buckets may be clipped at year boundaries. Locate
-			// each adjacent bucket instead of shifting endpoints separately.
-			direction, count := -1, tfBack
-			if count < 0 {
-				direction, count = 1, -count
-			}
-			for i := 0; i < count; i++ {
-				point := close
-				if direction < 0 {
-					point = open.Add(-time.Nanosecond)
-				}
-				bucketAnchor := time.Time{}
-				if !anchor.IsZero() && base == "D" {
-					bucketAnchor = point
-					if direction < 0 {
-						bucketAnchor = open.AddDate(0, 0, -1)
-					}
-				}
-				open, close, err = timeBucket(point, tf, bucketAnchor)
-				if err != nil {
-					return nil, err
-				}
-			}
-		default:
-			step := close.Sub(open) * time.Duration(tfBack)
-			open, close = open.Add(-step), close.Add(-step)
+		open, close, err = offsetTimeBucket(open, close, tf, anchor, tfBack)
+		if err != nil {
+			return nil, err
 		}
 	}
 	if session != "" && tfBack == 0 && close.After(window.close) {

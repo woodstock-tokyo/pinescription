@@ -225,7 +225,7 @@ func (r *Runtime) evalSecurity(call *Expr) (interface{}, error) {
 		if r.executingStatement >= 0 && r.executingStatement < len(source.Stmts) {
 			source.Stmts = source.Stmts[:r.executingStatement+1]
 		}
-		program, err := requestProgram(source, expr, call)
+		program, err := r.requestProgram(source, expr, call)
 		if err != nil {
 			return nil, err
 		}
@@ -676,16 +676,28 @@ func (r *Runtime) requestSwitchBody(body []Stmt, seen map[string]bool) ([]Stmt, 
 
 // Slice only global definitions needed by the expression. Unrelated plots,
 // alerts, host callbacks, and other requests are not replayed in the secondary.
-func requestProgram(source Program, expr, call *Expr) (Program, error) {
+func (r *Runtime) requestProgram(source Program, expr, call *Expr) (Program, error) {
 	out := source
 	out.Stmts = nil
 	out.Imports = nil
 	writes := map[string]bool{}
+	collections := map[string]bool{}
+	if len(r.envStack) > 0 {
+		for name, value := range r.envStack[0] {
+			switch value.(type) {
+			case *pineArray, *pineMap, *Matrix:
+				collections[name] = true
+			}
+		}
+	}
 	var collectWrites func([]Stmt)
 	collectWrites = func(stmts []Stmt) {
 		for _, s := range stmts {
 			if s.Name != "" {
 				writes[s.Name] = true
+				if requestCollectionExpr(s.Expr, collections) {
+					collections[s.Name] = true
+				}
 			}
 			for _, n := range s.TupleNames {
 				writes[n] = true
@@ -790,8 +802,10 @@ func requestProgram(source Program, expr, call *Expr) (Program, error) {
 	scan(expr)
 	var selected func(Stmt) bool
 	selected = func(s Stmt) bool {
-		if requestMutation(s.Expr, needed) {
-			return true
+		for _, expr := range []*Expr{s.Expr, s.Cond, s.Target, s.From, s.To, s.By, s.ForIn, s.SwitchExpr} {
+			if requestMutation(expr, needed, source.Functions, map[string]bool{}) {
+				return true
+			}
 		}
 		if needed[s.Name] {
 			return true
@@ -819,13 +833,17 @@ func requestProgram(source Program, expr, call *Expr) (Program, error) {
 	}
 	for pass := 0; pass <= len(writes); pass++ {
 		before := len(needed)
+		beforeCollections := len(collections)
 		// Reference assignments can alias a needed collection in either
 		// direction. Include their declarations and mutations transitively.
 		var aliases func([]Stmt)
 		aliases = func(stmts []Stmt) {
 			for _, s := range stmts {
 				if (s.Kind == "decl" || s.Kind == "assign") && s.Expr != nil && s.Expr.Kind == "ident" {
-					if needed[s.Name] || needed[s.Expr.Name] {
+					if collections[s.Expr.Name] {
+						collections[s.Name] = true
+					}
+					if collections[s.Expr.Name] && (needed[s.Name] || needed[s.Expr.Name]) {
 						needed[s.Name], needed[s.Expr.Name] = true, true
 					}
 				}
@@ -843,7 +861,7 @@ func requestProgram(source Program, expr, call *Expr) (Program, error) {
 				scanStatements([]Stmt{s})
 			}
 		}
-		if len(needed) == before {
+		if len(needed) == before && len(collections) == beforeCollections {
 			break
 		}
 	}
@@ -855,7 +873,7 @@ func requestProgram(source Program, expr, call *Expr) (Program, error) {
 		if e == call {
 			return true
 		}
-		if containsCall(e.Left) || containsCall(e.Right) || containsCall(e.Else) {
+		if containsCall(e.Left) || containsCall(e.Right) || containsCall(e.Else) || containsCall(e.SwitchExpr) {
 			return true
 		}
 		for _, a := range e.Args {
@@ -865,6 +883,21 @@ func requestProgram(source Program, expr, call *Expr) (Program, error) {
 		}
 		for _, a := range e.Elems {
 			if containsCall(a) {
+				return true
+			}
+		}
+		for _, c := range e.Cases {
+			if containsCall(c.Match) {
+				return true
+			}
+			for _, s := range c.Body {
+				if containsCall(s.Expr) {
+					return true
+				}
+			}
+		}
+		for _, s := range e.Default {
+			if containsCall(s.Expr) {
 				return true
 			}
 		}
@@ -913,25 +946,80 @@ func requestProgram(source Program, expr, call *Expr) (Program, error) {
 	return out, err
 }
 
-func requestMutation(expr *Expr, needed map[string]bool) bool {
+func requestCollectionExpr(expr *Expr, collections map[string]bool) bool {
+	if expr == nil {
+		return false
+	}
+	if expr.Kind == "ident" {
+		return collections[expr.Name]
+	}
+	if expr.Kind == "ternary" {
+		return requestCollectionExpr(expr.Right, collections) || requestCollectionExpr(expr.Else, collections)
+	}
+	if expr.Kind == "call" && expr.Left != nil {
+		root, method, _ := strings.Cut(expr.Left.Name, ".")
+		if root == "array" || root == "map" || root == "matrix" {
+			return method == "from" || method == "copy" || method == "new" || strings.HasPrefix(method, "new_")
+		}
+	}
+	return false
+}
+
+func requestMutation(expr *Expr, needed map[string]bool, functions map[string]FunctionDef, active map[string]bool) bool {
 	if expr == nil {
 		return false
 	}
 	// Mutations can be nested in a declaration's initializer or arguments.
-	for _, child := range []*Expr{expr.Left, expr.Right, expr.Else} {
-		if requestMutation(child, needed) {
+	for _, child := range []*Expr{expr.Left, expr.Right, expr.Else, expr.SwitchExpr} {
+		if requestMutation(child, needed, functions, active) {
 			return true
 		}
 	}
-	for _, child := range append(append([]*Expr(nil), expr.Args...), expr.Elems...) {
-		if requestMutation(child, needed) {
+	for _, children := range [][]*Expr{expr.Args, expr.Elems} {
+		for _, child := range children {
+			if requestMutation(child, needed, functions, active) {
+				return true
+			}
+		}
+	}
+	for _, c := range expr.Cases {
+		if requestMutation(c.Match, needed, functions, active) || requestStatementMutation(c.Body, needed, functions, active) {
 			return true
 		}
+	}
+	if requestStatementMutation(expr.Default, needed, functions, active) {
+		return true
 	}
 	if expr.Kind != "call" || expr.Left == nil {
 		return false
 	}
 	name := expr.Left.Name
+	if fn, ok := functions[name]; ok && !active[name] {
+		bound, err := bindNamedCallArgs(name, expr.Args, callParamSpec{Names: fn.Params})
+		if err != nil {
+			return false // The ordinary call path reports invalid arguments.
+		}
+		local := make(map[string]bool, len(needed)+len(fn.Params))
+		for name, value := range needed {
+			local[name] = value
+		}
+		for _, param := range fn.Params {
+			delete(local, param)
+		}
+		for i, param := range fn.Params {
+			arg := bound[i]
+			if arg == nil {
+				arg = fn.ParamDefaults[i]
+			}
+			if arg != nil && arg.Kind == "ident" && needed[arg.Name] {
+				local[param] = true
+			}
+		}
+		active[name] = true
+		mutates := requestMutation(fn.Expr, local, functions, active) || requestStatementMutation(fn.Body, local, functions, active)
+		delete(active, name)
+		return mutates
+	}
 	root, method, ok := strings.Cut(name, ".")
 	if !ok {
 		return false
@@ -954,4 +1042,41 @@ func requestMutation(expr *Expr, needed map[string]bool) bool {
 		first = first.NamedArgValue()
 	}
 	return first != nil && first.Kind == "ident" && needed[first.Name]
+}
+
+// Track parameter aliases in declaration order without letting callee locals
+// escape into the caller's dependency set.
+func requestStatementMutation(stmts []Stmt, needed map[string]bool, functions map[string]FunctionDef, active map[string]bool) bool {
+	if len(stmts) == 0 {
+		return false
+	}
+	local := make(map[string]bool, len(needed))
+	for name, value := range needed {
+		local[name] = value
+	}
+	for _, s := range stmts {
+		for _, expr := range []*Expr{s.Expr, s.Cond, s.Target, s.From, s.To, s.By, s.ForIn, s.SwitchExpr} {
+			if requestMutation(expr, local, functions, active) {
+				return true
+			}
+		}
+		for _, block := range [][]Stmt{s.Then, s.Else, s.Body, s.Default} {
+			if requestStatementMutation(block, local, functions, active) {
+				return true
+			}
+		}
+		for _, c := range s.Cases {
+			if requestMutation(c.Match, local, functions, active) || requestStatementMutation(c.Body, local, functions, active) {
+				return true
+			}
+		}
+		if s.Kind == "decl" || s.Kind == "assign" {
+			alias := s.Expr != nil && s.Expr.Kind == "ident" && local[s.Expr.Name]
+			delete(local, s.Name)
+			if alias {
+				local[s.Name] = true
+			}
+		}
+	}
+	return false
 }

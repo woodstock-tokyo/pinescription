@@ -329,6 +329,7 @@ func (r *Runtime) evalStrategyCall(call *Expr) (interface{}, error) {
 			}
 		}
 		s.orders = out
+		s.pruneNamedExits()
 		return nil, nil
 	}
 	switch name {
@@ -501,6 +502,9 @@ func (r *Runtime) placeStrategyOrder(call *Expr) (interface{}, error) {
 		if o.limit == nil && o.stop == nil && o.profit == nil && o.loss == nil {
 			return nil, fmt.Errorf("strategy.exit requires a profit/limit or loss/stop leg")
 		}
+		if o.from != "" && len(o.intended) == 0 && len(o.pendingEntries) == 0 {
+			return nil, nil
+		}
 	} else {
 		o.kind = "close"
 		if name == "strategy.close" {
@@ -526,7 +530,7 @@ func (r *Runtime) placeStrategyOrder(call *Expr) (interface{}, error) {
 		}
 		if immediate {
 			matches := s.matchingTrades(o)
-			fill := s.mark - float64(matches[0].dir)*s.slippage*s.tick
+			fill := r.exactSeriesValue("close", r.effectiveBarIndex()) - float64(matches[0].dir)*s.slippage*s.tick
 			return nil, r.fillStrategyClose(o, fill, -1)
 		}
 	}
@@ -737,6 +741,7 @@ func (r *Runtime) strategySegment(start, end float64, opening, closeProcessing b
 				remaining = append(remaining, o)
 			}
 			s.orders = remaining
+			s.pruneNamedExits()
 		}
 	}
 	return fmt.Errorf("strategy intrabar event limit exceeded")
@@ -751,9 +756,42 @@ func (s *strategyState) removeOrder(order *strategyOrder) {
 	for i, o := range s.orders {
 		if o == order {
 			s.orders = append(s.orders[:i], s.orders[i+1:]...)
+			s.pruneNamedExits()
 			return
 		}
 	}
+}
+
+func (s *strategyState) pruneNamedExits() {
+	pending, open := map[int]bool{}, map[int]bool{}
+	for _, o := range s.orders {
+		if o.kind == "entry" || o.kind == "order" {
+			pending[o.uid] = true
+		}
+	}
+	for _, t := range s.open {
+		open[t.uid] = true
+	}
+	orders := s.orders[:0]
+	for _, o := range s.orders {
+		if o.kind == "exit" && o.from != "" {
+			for uid := range o.pendingEntries {
+				if !pending[uid] {
+					delete(o.pendingEntries, uid)
+				}
+			}
+			for uid := range o.intended {
+				if !open[uid] {
+					delete(o.intended, uid)
+				}
+			}
+			if len(o.pendingEntries) == 0 && len(o.intended) == 0 {
+				continue
+			}
+		}
+		orders = append(orders, o)
+	}
+	s.orders = orders
 }
 func (s *strategyState) matchingTrades(order *strategyOrder) []*strategyTrade {
 	var out []*strategyTrade
@@ -837,7 +875,7 @@ func (r *Runtime) fillStrategyEntry(o *strategyOrder, price float64) (float64, e
 			}
 		}
 	}
-	r.strategyMark(price)
+	r.strategyMark(s.mark)
 	return total, nil
 }
 func (r *Runtime) fillStrategyClose(o *strategyOrder, price float64, uid int) error {
@@ -874,7 +912,8 @@ func (r *Runtime) fillStrategyClose(o *strategyOrder, price float64, uid int) er
 			break
 		}
 	}
-	r.strategyMark(price)
+	r.strategyMark(s.mark)
+	s.pruneNamedExits()
 	return nil
 }
 func (r *Runtime) closeStrategyTrade(t *strategyTrade, qty, price, fee float64, id, comment string) error {

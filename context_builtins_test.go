@@ -39,7 +39,9 @@ func TestExactSeriesNeverFallsBackToClose(t *testing.T) {
 				e := NewEngine()
 				e.RegisterMarketDataProvider(&unavailableExactProvider{base, valueType, empty})
 				e.SetSymbolInfo("TEST", SymbolInfo{"mintick": 1.0, "pointvalue": 1.0, "currency": "USD"})
-				code, err := e.Compile("result = close")
+				// Include the failing series in the preload set, not just in a
+				// later exact lookup, to catch wrong-key cache pollution.
+				code, err := e.Compile("preloaded = " + valueType + "\nresult = close")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -143,6 +145,9 @@ func TestCalendarBucketReviewRegressions(t *testing.T) {
 		{"previous_clipped_month_open", "2025-01-01T12:00:00Z", `time("5M","","UTC",0,1)`, "2024-11-01T00:00:00Z"},
 		{"next_clipped_month_close", "2025-11-01T12:00:00Z", `time_close("5M","","UTC",0,-1)`, "2026-06-01T00:00:00Z"},
 		{"previous_clipped_day_close", "2026-01-01T12:00:00Z", `time_close("2D","","UTC",0,1)`, "2026-01-01T00:00:00Z"},
+		{"previous_clipped_intraday_open", "2025-01-01T23:59:00Z", `time("7","","UTC",0,1)`, "2025-01-01T23:48:00Z"},
+		{"previous_clipped_intraday_close", "2025-01-01T23:59:00Z", `time_close("7","","UTC",0,1)`, "2025-01-01T23:55:00Z"},
+		{"next_intraday_midnight", "2025-01-01T23:59:00Z", `time("7","","UTC",0,-1)`, "2025-01-02T00:00:00Z"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := NewEngine()
@@ -157,6 +162,86 @@ func TestCalendarBucketReviewRegressions(t *testing.T) {
 			want, _ := time.Parse(time.RFC3339, tc.want)
 			if err != nil || got != float64(want.UnixMilli()) {
 				t.Fatalf("got %v, %v; want %s", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestBucketOffsetsMatchAdjacentBoundaries(t *testing.T) {
+	for _, zone := range []string{"UTC", "America/New_York"} {
+		loc, err := time.LoadLocation(zone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, date := range []string{"2025-01-01T01:00:00", "2024-12-31T23:59:00", "2025-03-09T23:59:00", "2025-11-02T23:59:00"} {
+			point, err := time.ParseInLocation("2006-01-02T15:04:05", date, loc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tf := range []string{"1D", "2D", "20D", "365D", "1W", "3W", "52W", "1M", "5M", "12M", "7", "13", "60", "1440", "5S"} {
+				t.Run(zone+"/"+date+"/"+tf, func(t *testing.T) {
+					open, close, err := timeBucket(point, tf, time.Time{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, offset := range []int{-500, -31, -1, 0, 1, 31, 500} {
+						wantOpen, wantClose := open, close
+						direction, count := -1, offset
+						if count < 0 {
+							direction, count = 1, -count
+						}
+						for i := 0; i < count; i++ {
+							probe := wantClose
+							if direction < 0 {
+								probe = wantOpen.Add(-time.Nanosecond)
+							}
+							wantOpen, wantClose, err = timeBucket(probe, tf, time.Time{})
+							if err != nil {
+								t.Fatal(err)
+							}
+						}
+						gotOpen, gotClose, err := offsetTimeBucket(open, close, tf, time.Time{}, offset)
+						if err != nil || !gotOpen.Equal(wantOpen) || !gotClose.Equal(wantClose) {
+							t.Fatalf("[%d]: got %s..%s, %v; want %s..%s", offset, gotOpen, gotClose, err, wantOpen, wantClose)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestMillionBucketOffsetsRoundTrip(t *testing.T) {
+	for _, tf := range []string{"1D", "2D", "365D", "1W", "3W", "52W", "1M", "5M", "12M", "7", "1440", "5S"} {
+		t.Run(tf, func(t *testing.T) {
+			open, close, err := timeBucket(time.Date(2025, 12, 31, 23, 59, 0, 0, time.UTC), tf, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			earlierOpen, earlierClose, err := offsetTimeBucket(open, close, tf, time.Time{}, 1000000)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotOpen, gotClose, err := offsetTimeBucket(earlierOpen, earlierClose, tf, time.Time{}, -1000000)
+			if err != nil || !gotOpen.Equal(open) || !gotClose.Equal(close) {
+				t.Fatalf("got %s..%s, %v; want %s..%s", gotOpen, gotClose, err, open, close)
+			}
+		})
+	}
+}
+
+func BenchmarkMillionBucketOffset(b *testing.B) {
+	for _, tf := range []string{"1D", "5M", "7", "1440"} {
+		b.Run(tf, func(b *testing.B) {
+			open, close, err := timeBucket(time.Date(2025, 12, 31, 23, 59, 0, 0, time.UTC), tf, time.Time{})
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, _, err := offsetTimeBucket(open, close, tf, time.Time{}, 1000000); err != nil {
+					b.Fatal(err)
+				}
 			}
 		})
 	}

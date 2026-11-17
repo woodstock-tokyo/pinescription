@@ -785,11 +785,10 @@ func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, err
 		if !ok {
 			return nil, nil, fmt.Errorf("invalid series key in bytecode: %q", key)
 		}
-		ser, err := rt.getSeries(symbol, valueType)
+		_, err := rt.getSeries(symbol, valueType)
 		if err != nil {
 			return nil, nil, err
 		}
-		seriesByKey[key] = ser
 	}
 
 	for i := 0; i < baseSeries.Length(); i++ {

@@ -1556,8 +1556,8 @@ func TestRuntimeExposedFunctionsAndFailoverBehavior(t *testing.T) {
 
 	keys := rt.SeriesKeys()
 	sort.Strings(keys)
-	if len(keys) < 2 || keys[0] != "EVT|close" || keys[1] != "EVT|event" {
-		t.Fatalf("expected runtime keys to include close and event, got %v", keys)
+	if len(keys) != 1 || keys[0] != "EVT|event" {
+		t.Fatalf("expected only genuinely loaded event data in the cache, got %v", keys)
 	}
 
 	if _, ok := rt.Series("EVT|close"); !ok {

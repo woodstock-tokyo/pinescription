@@ -390,3 +390,73 @@ if bar_index == 0
 		})
 	}
 }
+
+func TestStrategyDiscardsUnmatchableNamedExits(t *testing.T) {
+	for _, script := range []string{
+		`strategy.exit(str.tostring(bar_index),"L",limit=110)`,
+		`strategy.entry("L",strategy.long,stop=200)
+strategy.exit(str.tostring(bar_index),"L",limit=210)
+strategy.cancel("L")`,
+	} {
+		rt := strategyRun(t, strategyEngine(
+			brokerCandle{100, 100, 100, 100}, brokerCandle{100, 100, 100, 100},
+		), `strategy("Unused exits",margin_long=0,margin_short=0)
+`+script)
+		if len(rt.strategy.orders) != 0 {
+			t.Fatalf("retained %d unmatchable orders", len(rt.strategy.orders))
+		}
+	}
+}
+
+func TestStrategyPreservesExitsWithRemainingEligibleEntries(t *testing.T) {
+	rt := strategyRun(t, strategyEngine(brokerCandle{100, 100, 100, 100}, brokerCandle{100, 100, 100, 100}),
+		`strategy("Pending exits",margin_long=0,margin_short=0,pyramiding=2)
+if bar_index == 0
+    strategy.entry("L",strategy.long,stop=200)
+    strategy.entry("S",strategy.short,stop=50)
+    strategy.exit("X","L",limit=210)
+    strategy.cancel("S")`)
+	if len(rt.strategy.orders) != 2 {
+		t.Fatalf("expected eligible entry and exit to remain, got %d", len(rt.strategy.orders))
+	}
+	rt = strategyRun(t, strategyEngine(brokerCandle{100, 100, 100, 100}, brokerCandle{100, 100, 100, 100}),
+		`strategy("Open exit",margin_long=0,margin_short=0,pyramiding=2)
+if bar_index == 0
+    strategy.entry("L",strategy.long)
+if bar_index == 1
+    strategy.entry("L",strategy.long,stop=200)
+    strategy.exit("X","L",limit=210)
+    strategy.cancel("L")`)
+	if len(rt.strategy.orders) != 1 || rt.strategy.orders[0].kind != "exit" || len(rt.strategy.open) != 1 {
+		t.Fatal("cancelling the pending entry removed an exit still covering an open trade")
+	}
+}
+
+func TestStrategyOCACancellationPrunesOrphanedExits(t *testing.T) {
+	rt := strategyRun(t, strategyEngine(brokerCandle{100, 100, 100, 100}, brokerCandle{100, 106, 90, 100}),
+		`strategy("Orphan exits",margin_long=0,margin_short=0)
+if bar_index == 0
+    strategy.entry("L",strategy.long,stop=105,oca_name="g",oca_type=strategy.oca.cancel)
+    strategy.entry("S",strategy.short,stop=95,oca_name="g",oca_type=strategy.oca.cancel)
+    strategy.exit("X","S",limit=90)`)
+	if len(rt.strategy.orders) != 0 {
+		t.Fatalf("OCA cancellation left %d orphaned orders", len(rt.strategy.orders))
+	}
+}
+
+func TestStrategyImmediatePartialClosesKeepChartMark(t *testing.T) {
+	rt := strategyRun(t, strategyEngine(brokerCandle{100, 100, 100, 100}, brokerCandle{100, 110, 100, 110}),
+		`strategy("Partial closes",initial_capital=1000,margin_long=0,margin_short=0,slippage=1)
+if bar_index == 0
+    strategy.entry("L",strategy.long,qty=2)
+if bar_index == 1
+    strategy.close("L",qty=1,immediately=true)
+between = strategy.equity
+if bar_index == 1
+    strategy.close("L",qty=1,immediately=true)
+first = strategy.closedtrades.exit_price(0)
+second = strategy.closedtrades.exit_price(1)`)
+	for name, want := range map[string]float64{"first": 109, "second": 109, "between": 1017} {
+		assertStrategyNumber(t, rt, name, want)
+	}
+}

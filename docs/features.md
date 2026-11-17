@@ -311,6 +311,11 @@ may use a member name, its qualified name, or `EnumValue`. Source selections use
 Metadata uses the constants visible at the input's declaration; later constants,
 sibling blocks, and function-local constants cannot overwrite those defaults.
 Function parameters and nonconstant locals shadow outer constants.
+Inputs in function parameter defaults are also discovered and validated before
+execution, including defaults in unused functions. Their prepared bindings honor
+host overrides just like body-level inputs; for example,
+`pick(x = input.int(2, minval=1)) => x` exposes that input before `pick()` runs.
+Empty child scopes do not copy the constant environment.
 
 ```pine
 const int n = 2
@@ -468,6 +473,10 @@ Pinescription provides string manipulation functions and placeholder types for c
   Calendar `timeframe_bars_back` offsets follow actual adjacent buckets, including
   shortened year-end buckets: on December 31, 2025,
   `time_close("5M", "", "UTC", 0, 1)` is November 1, not August 1.
+  Large calendar offsets skip complete 400-year Gregorian cycles rather than
+  visiting each intervening bar. Intraday offsets likewise jump ordinary days
+  between timezone transitions, while preserving shortened final buckets: at
+  23:59 UTC, `time("7", "", "UTC", 0, 1)` opens at 23:48, not 23:50.
 - Timezones accept IANA names and fixed `UTC`/`GMT` offsets. Invalid zones are
   errors, not silent UTC fallbacks. `timestamp` accepts numeric calendar
   components (optionally prefixed by timezone) or a date string in ISO/RFC3339
@@ -546,6 +555,9 @@ Same-context requests can use the chart data without an additional provider.
   plots/alerts/callbacks are not replayed. Mutable results are snapshotted.
   Mutations are retained when their return value is assigned but unused, and
   through reference aliases such as `b = a; b.push(5)`.
+  Script calls that mutate a needed collection parameter are retained too,
+  including nested calls and mutations inside switch expressions. Scalar copies
+  are not collection aliases and do not create extra request dependencies.
   Series-parameter substitution includes switch selectors, matches, and bodies.
 - Limits: 40 data contexts, 128 expression streams, nested depth 16, bounded
   collection snapshots. Arbitrary mutable function-local captures and
@@ -558,6 +570,14 @@ b = a
 removed = array.pop(b)
 requested = request.security("OTHER", "120", array.sum(a))
 // requested uses the requested close alone, not requested close + 5.
+```
+
+```pine
+appendFive(values) => array.push(values, 5)
+values = array.from(close)
+appendFive(values)
+requested = request.security("OTHER", "120", array.sum(values))
+// The script call is retained: requested equals requested close + 5.
 ```
 
 ### Footprints
@@ -586,6 +606,8 @@ expression, footprints describe the requested context's own bars.
 Exact OHLC/volume lookups never substitute the default close series on a failed
 or empty load. Strategies reject invalid OHLC; other exact-data consumers receive
 `na` and retain their documented missing-data policies.
+Preloading caches only genuinely loaded series under their own value-type keys;
+legacy default-series fallback is not registered as an exact OHLC cache entry.
 
 For example:
 
@@ -609,10 +631,15 @@ Implemented behavior:
   `cancel`, and `cancel_all` are supported.
   Named exits capture eligible open trades and pending entry identities when
   called; an unmatched named exit cannot capture an entry created on a later bar.
+  Named exits with no eligible entries are discarded, and orphaned exits are
+  removed when cancellation leaves neither eligible pending nor open trades.
 - `close(..., immediately=true)` closes during evaluation;
   `process_orders_on_close` processes eligible orders after evaluation, without
   a second script calculation.
   Immediate market closes still apply direction-dependent slippage.
+  Slippage changes execution prices, not the chart mark used for equity or later
+  orders. Two immediate partial closes on a bar with close 110 and one tick of
+  sell slippage both fill at 109; the remaining position stays marked at 110.
 - Fixed/cash/equity-percent sizing, commission modes, slippage, and partial
   closes are supported. Cash/percent sizing requires `syminfo.mincontract`;
   default order quantity is calculated at the fill price.
