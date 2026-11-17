@@ -66,7 +66,7 @@ func replaceOccurrence(args []interface{}) (string, error) {
 			}
 			return text[:pos] + replacement + text[pos+len(target):], nil
 		}
-		start = pos + 1
+		start = pos + len(target)
 	}
 	return text, nil
 }

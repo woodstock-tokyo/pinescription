@@ -409,7 +409,7 @@ Pinescription provides string manipulation functions and placeholder types for c
 - `str.startswith(str, prefix)` - Check if string starts with prefix
 - `str.endswith(str, suffix)` - Check if string ends with suffix
 - `str.replace(str, old, new, occurrence)` - Replace one occurrence (default:
-  the first, index zero). Occurrences may overlap. An absent occurrence leaves
+  the first, index zero). Occurrences are non-overlapping. An absent occurrence leaves
   the source unchanged.
 - `str.substring(str, from, to)` - Extract substring
 - `str.split(str, delimiter)` - Split into array

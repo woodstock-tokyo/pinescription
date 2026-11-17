@@ -36,7 +36,10 @@ func completionValue(t *testing.T, script string, values ...float64) interface{}
 func TestCompletedStringAPIs(t *testing.T) {
 	for _, tc := range []struct{ expr, want string }{
 		{`str.replace("aaaa", "aa", "X")`, "Xaa"},
-		{`str.replace("aaaa", "aa", "X", 1)`, "aXa"},
+		{`str.replace("aaaa", "aa", "X", 1)`, "aaX"},
+		{`str.replace("aaaa", "aa", "X", 2)`, "aaaa"},
+		{`str.replace("ababa", "aba", "X", 1)`, "ababa"},
+		{`str.replace("éééé", "éé", "X", 1)`, "ééX"},
 		{`str.replace("abc", "", "X", 2)`, "abXc"},
 		{`str.replace("éé", "", "X", 1)`, "éXé"},
 		{`str.replace("abc", "z", "X", 0)`, "abc"},
