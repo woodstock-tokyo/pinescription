@@ -663,6 +663,9 @@ func (p *parser) parseBlock() ([]Stmt, error) {
 		if p.match(tokDedent) || p.match(tokEOF) {
 			break
 		}
+		if p.peek().Typ == tokIdent && (p.peek().Text == "import" || p.peek().Text == "export") {
+			return nil, fmt.Errorf("line %d: %s must appear at top level", p.peek().Line, p.peek().Text)
+		}
 		stmt, err := p.parseStmt()
 		if err != nil {
 			return nil, err

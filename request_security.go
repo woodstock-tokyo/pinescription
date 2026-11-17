@@ -211,9 +211,6 @@ func (r *Runtime) evalSecurity(call *Expr) (interface{}, error) {
 			}
 			return nil, loadErr
 		}
-		if currency != "" && data.Info["currency"] != currency {
-			return nil, fmt.Errorf("request currency conversion from %v to %s is not configured", data.Info["currency"], currency)
-		}
 		if count > 0 && count < len(data.Bars) {
 			data = sliceSecurityData(data, len(data.Bars)-count)
 		}
@@ -258,6 +255,9 @@ func (r *Runtime) evalSecurity(call *Expr) (interface{}, error) {
 		stream = &requestStream{runtime: child, expr: expr, data: data}
 		r.requestCache[key] = stream
 		r.requests.streams++
+	}
+	if currency != "" && stream.data.Info["currency"] != currency {
+		return nil, fmt.Errorf("request currency conversion from %v to %s is not configured", stream.data.Info["currency"], currency)
 	}
 	open, close, _ := r.barTimes()
 	if lower {
@@ -632,7 +632,46 @@ func (r *Runtime) requestExpression(expr *Expr, seen map[string]bool) (*Expr, er
 			return nil, err
 		}
 	}
+	copy.SwitchExpr, err = r.requestExpression(expr.SwitchExpr, seen)
+	if err != nil {
+		return nil, err
+	}
+	copy.Cases = make([]SwitchCase, len(expr.Cases))
+	for i, c := range expr.Cases {
+		copy.Cases[i] = c
+		copy.Cases[i].Match, err = r.requestExpression(c.Match, seen)
+		if err != nil {
+			return nil, err
+		}
+		copy.Cases[i].Body, err = r.requestSwitchBody(c.Body, seen)
+		if err != nil {
+			return nil, err
+		}
+	}
+	copy.Default, err = r.requestSwitchBody(expr.Default, seen)
+	if err != nil {
+		return nil, err
+	}
 	return &copy, nil
+}
+
+func (r *Runtime) requestSwitchBody(body []Stmt, seen map[string]bool) ([]Stmt, error) {
+	if body == nil {
+		return nil, nil
+	}
+	out := make([]Stmt, len(body))
+	for i, stmt := range body {
+		out[i] = stmt
+		if stmt.Kind != "expr" {
+			return nil, fmt.Errorf("request expression switch body has unsupported statement kind %s", stmt.Kind)
+		}
+		var err error
+		out[i].Expr, err = r.requestExpression(stmt.Expr, seen)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // Slice only global definitions needed by the expression. Unrelated plots,
@@ -751,7 +790,7 @@ func requestProgram(source Program, expr, call *Expr) (Program, error) {
 	scan(expr)
 	var selected func(Stmt) bool
 	selected = func(s Stmt) bool {
-		if s.Kind == "expr" && requestMutation(s.Expr, needed) {
+		if requestMutation(s.Expr, needed) {
 			return true
 		}
 		if needed[s.Name] {
@@ -780,6 +819,25 @@ func requestProgram(source Program, expr, call *Expr) (Program, error) {
 	}
 	for pass := 0; pass <= len(writes); pass++ {
 		before := len(needed)
+		// Reference assignments can alias a needed collection in either
+		// direction. Include their declarations and mutations transitively.
+		var aliases func([]Stmt)
+		aliases = func(stmts []Stmt) {
+			for _, s := range stmts {
+				if (s.Kind == "decl" || s.Kind == "assign") && s.Expr != nil && s.Expr.Kind == "ident" {
+					if needed[s.Name] || needed[s.Expr.Name] {
+						needed[s.Name], needed[s.Expr.Name] = true, true
+					}
+				}
+				for _, block := range [][]Stmt{s.Then, s.Else, s.Body, s.Default} {
+					aliases(block)
+				}
+				for _, c := range s.Cases {
+					aliases(c.Body)
+				}
+			}
+		}
+		aliases(source.Stmts)
 		for _, s := range source.Stmts {
 			if selected(s) {
 				scanStatements([]Stmt{s})
@@ -856,7 +914,21 @@ func requestProgram(source Program, expr, call *Expr) (Program, error) {
 }
 
 func requestMutation(expr *Expr, needed map[string]bool) bool {
-	if expr == nil || expr.Kind != "call" || expr.Left == nil {
+	if expr == nil {
+		return false
+	}
+	// Mutations can be nested in a declaration's initializer or arguments.
+	for _, child := range []*Expr{expr.Left, expr.Right, expr.Else} {
+		if requestMutation(child, needed) {
+			return true
+		}
+	}
+	for _, child := range append(append([]*Expr(nil), expr.Args...), expr.Elems...) {
+		if requestMutation(child, needed) {
+			return true
+		}
+	}
+	if expr.Kind != "call" || expr.Left == nil {
 		return false
 	}
 	name := expr.Left.Name

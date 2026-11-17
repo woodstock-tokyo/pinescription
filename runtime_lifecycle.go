@@ -51,6 +51,7 @@ func (r *Runtime) Release() {
 	r.timeframeSecsOK = false
 	r.currentTime = time.Time{}
 	r.startTime = time.Time{}
+	r.inferredStart = false
 	r.logSink = nil
 	r.alertSink = nil
 	r.barStep = 0

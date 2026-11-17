@@ -20,6 +20,8 @@ type strategyTrade struct {
 	entryTime, exitTime                                          time.Time
 }
 type strategyOrder struct {
+	uid                                   int
+	pendingEntries                        map[int]bool
 	defaultQty                            bool
 	id, kind, from, comment, oca, ocaType string
 	dir, bar                              int
@@ -29,6 +31,7 @@ type strategyOrder struct {
 	intended                              map[int]bool
 }
 type strategyState struct {
+	metricHistory                                                            []map[string]interface{}
 	closeRule                                                                string
 	minContract                                                              float64
 	initial, cash, point, tick, mark, slippage, commission                   float64
@@ -39,6 +42,7 @@ type strategyState struct {
 	orders                                                                   []*strategyOrder
 	open, closed                                                             []*strategyTrade
 	nextTrade                                                                int
+	nextOrder                                                                int
 	net, grossProfit, grossLoss, winningPercent, losingPercent, totalPercent float64
 	wins, losses, evens                                                      int
 	peak, trough, maxDD, maxRunup, maxAll, maxLong, maxShort                 float64
@@ -477,6 +481,20 @@ func (r *Runtime) placeStrategyOrder(call *Expr) (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
+		if o.from != "" {
+			o.intended = map[int]bool{}
+			o.pendingEntries = map[int]bool{}
+			for _, t := range s.open {
+				if t.entryID == o.from {
+					o.intended[t.uid] = true
+				}
+			}
+			for _, entry := range s.orders {
+				if entry.id == o.from && (entry.kind == "entry" || entry.kind == "order") {
+					o.pendingEntries[entry.uid] = true
+				}
+			}
+		}
 		if o.profit != nil && o.limit != nil || o.loss != nil && o.stop != nil {
 			return nil, fmt.Errorf("combined relative and absolute exit legs are not yet implemented")
 		}
@@ -507,11 +525,14 @@ func (r *Runtime) placeStrategyOrder(call *Expr) (interface{}, error) {
 			return nil, err
 		}
 		if immediate {
-			return nil, r.fillStrategyClose(o, s.mark, -1)
+			matches := s.matchingTrades(o)
+			fill := s.mark - float64(matches[0].dir)*s.slippage*s.tick
+			return nil, r.fillStrategyClose(o, fill, -1)
 		}
 	}
 	for i, prior := range s.orders {
 		if prior.id == o.id && prior.kind == o.kind && prior.from == o.from {
+			o.uid = prior.uid
 			s.orders[i] = o
 			return nil, nil
 		}
@@ -519,6 +540,8 @@ func (r *Runtime) placeStrategyOrder(call *Expr) (interface{}, error) {
 	if len(s.orders) >= 10000 {
 		return nil, fmt.Errorf("strategy pending order limit exceeded")
 	}
+	s.nextOrder++
+	o.uid = s.nextOrder
 	s.orders = append(s.orders, o)
 	return nil, nil
 }
@@ -683,12 +706,10 @@ func (r *Runtime) strategySegment(start, end float64, opening, closeProcessing b
 			if s.minContract > 0 {
 				chosen.qty = math.Floor(chosen.qty/s.minContract+1e-10) * s.minContract
 			}
-			qty := math.Min(chosen.qty, total)
-			if chosenTrade != nil {
-				qty = math.Min(qty, chosenTrade.qty)
-			}
+			before, _ := s.position()
 			err = r.fillStrategyClose(chosen, fill, tradeUID(chosenTrade))
-			filledQty = qty
+			after, _ := s.position()
+			filledQty = math.Abs(before - after)
 		} else {
 			filledQty, err = r.fillStrategyEntry(chosen, fill)
 		}
@@ -701,10 +722,10 @@ func (r *Runtime) strategySegment(start, end float64, opening, closeProcessing b
 		if chosen.kind != "exit" || chosen.qty <= 1e-12 || len(s.matchingTrades(chosen)) == 0 {
 			s.removeOrder(chosen)
 		}
-		if chosen.oca != "" && chosen.ocaType != "none" {
+		if filledQty > 0 && chosen.oca != "" && chosen.ocaType != "none" {
 			remaining := s.orders[:0]
 			for _, o := range s.orders {
-				if o.oca == chosen.oca {
+				if o.oca == chosen.oca && o.ocaType == chosen.ocaType {
 					if chosen.ocaType == "cancel" {
 						continue
 					}
@@ -810,6 +831,11 @@ func (r *Runtime) fillStrategyEntry(o *strategyOrder, price float64) (float64, e
 		t := &strategyTrade{uid: s.nextTrade, entryID: o.id, entryComment: o.comment, dir: o.dir, qty: openQty, entry: price, entryFee: openQty * perUnitFee, entryBar: r.effectiveBarIndex(), entryTime: open}
 		s.cash -= t.entryFee
 		s.open = append(s.open, t)
+		for _, exit := range s.orders {
+			if exit.pendingEntries[o.uid] {
+				exit.intended[t.uid] = true
+			}
+		}
 	}
 	r.strategyMark(price)
 	return total, nil
@@ -931,6 +957,39 @@ func (r *Runtime) strategyMark(price float64) {
 	}
 }
 func (r *Runtime) strategyIdentifier(name string) (interface{}, bool) {
+	value, ok := r.liveStrategyIdentifier(name)
+	if !ok || r.evalOffset == 0 {
+		return value, ok
+	}
+	index := r.effectiveBarIndex()
+	if index < 0 || index >= len(r.strategy.metricHistory) {
+		return math.NaN(), true
+	}
+	return r.strategy.metricHistory[index][name], true
+}
+
+// Freeze scalar calculation results before optional post-evaluation close fills.
+// Keeping only values avoids retaining references to the mutable trade ledger.
+func (r *Runtime) snapshotStrategyMetrics() {
+	if r.strategy == nil {
+		return
+	}
+	values := map[string]interface{}{}
+	for _, name := range strings.Fields(`account_currency initial_capital equity netprofit netprofit_percent
+openprofit openprofit_percent grossprofit grossloss grossprofit_percent grossloss_percent
+position_size position_avg_price position_entry_name opentrades closedtrades
+closedtrades.first_index opentrades.capital_held wintrades losstrades eventrades
+avg_trade avg_trade_percent avg_winning_trade avg_winning_trade_percent
+avg_losing_trade avg_losing_trade_percent max_drawdown max_drawdown_percent
+max_runup max_runup_percent max_contracts_held_all max_contracts_held_long
+max_contracts_held_short margin_liquidation_price`) {
+		key := "strategy." + name
+		values[key], _ = r.liveStrategyIdentifier(key)
+	}
+	r.strategy.metricHistory = append(r.strategy.metricHistory, values)
+}
+
+func (r *Runtime) liveStrategyIdentifier(name string) (interface{}, bool) {
 	s := r.strategy
 	if s == nil {
 		return nil, false

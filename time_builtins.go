@@ -260,6 +260,9 @@ func timeBucket(t time.Time, tf string, anchor time.Time) (time.Time, time.Time,
 		}
 		return open, close, nil
 	case "D":
+		if !anchor.IsZero() {
+			t = anchor
+		}
 		date := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
 		if mult > 1 {
 			date = date.AddDate(0, 0, -(t.YearDay()-1)%mult)
@@ -377,14 +380,32 @@ func (r *Runtime) timeFunction(args []interface{}, closing bool) (interface{}, e
 		return nil, err
 	}
 	if tfBack != 0 {
-		base, mult, _ := parseTimeframe(tf)
+		base, _, _ := parseTimeframe(tf)
 		switch base {
-		case "M":
-			open, close = open.AddDate(0, -tfBack*mult, 0), close.AddDate(0, -tfBack*mult, 0)
-		case "W":
-			open, close = open.AddDate(0, 0, -7*tfBack*mult), close.AddDate(0, 0, -7*tfBack*mult)
-		case "D":
-			open, close = open.AddDate(0, 0, -tfBack*mult), close.AddDate(0, 0, -tfBack*mult)
+		case "M", "W", "D":
+			// Calendar buckets may be clipped at year boundaries. Locate
+			// each adjacent bucket instead of shifting endpoints separately.
+			direction, count := -1, tfBack
+			if count < 0 {
+				direction, count = 1, -count
+			}
+			for i := 0; i < count; i++ {
+				point := close
+				if direction < 0 {
+					point = open.Add(-time.Nanosecond)
+				}
+				bucketAnchor := time.Time{}
+				if !anchor.IsZero() && base == "D" {
+					bucketAnchor = point
+					if direction < 0 {
+						bucketAnchor = open.AddDate(0, 0, -1)
+					}
+				}
+				open, close, err = timeBucket(point, tf, bucketAnchor)
+				if err != nil {
+					return nil, err
+				}
+			}
 		default:
 			step := close.Sub(open) * time.Duration(tfBack)
 			open, close = open.Add(-step), close.Add(-step)
@@ -406,7 +427,14 @@ func shiftTimeframe(t time.Time, steps int, tf string) time.Time {
 	}
 	switch base {
 	case "M":
-		return t.AddDate(0, steps*mult, 0)
+		lastDay := time.Date(t.Year(), t.Month()+1, 0, 0, 0, 0, 0, t.Location()).Day()
+		target := time.Date(t.Year(), t.Month()+time.Month(steps*mult), 1, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
+		targetLast := time.Date(target.Year(), target.Month()+1, 0, 0, 0, 0, 0, t.Location()).Day()
+		day := t.Day()
+		if day == lastDay || day > targetLast {
+			day = targetLast
+		}
+		return target.AddDate(0, 0, day-1)
 	case "W":
 		return t.AddDate(0, 0, steps*mult*7)
 	case "D":

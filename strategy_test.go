@@ -211,3 +211,182 @@ during = strategy.position_size`)
 		t.Fatalf("close processing did not fill: %v", position)
 	}
 }
+
+func TestStrategyMetricHistoryPreservesPriorCalculations(t *testing.T) {
+	e := strategyEngine(
+		brokerCandle{100, 105, 95, 100},
+		brokerCandle{110, 115, 108, 112},
+		brokerCandle{120, 122, 118, 121},
+		brokerCandle{130, 132, 125, 128},
+		brokerCandle{125, 130, 120, 123},
+	)
+	type observation struct{ current, previous, older interface{} }
+	observed := map[string][]observation{}
+	e.RegisterFunction("capture_metric", func(args ...interface{}) (interface{}, error) {
+		name := args[0].(string)
+		observed[name] = append(observed[name], observation{args[1], args[2], args[3]})
+		return nil, nil
+	})
+	metrics := strings.Fields(`account_currency initial_capital equity netprofit netprofit_percent
+openprofit openprofit_percent grossprofit grossloss grossprofit_percent grossloss_percent
+position_size position_avg_price position_entry_name opentrades closedtrades
+closedtrades.first_index opentrades.capital_held wintrades losstrades eventrades
+avg_trade avg_trade_percent avg_winning_trade avg_winning_trade_percent
+avg_losing_trade avg_losing_trade_percent max_drawdown max_drawdown_percent
+max_runup max_runup_percent max_contracts_held_all max_contracts_held_long
+max_contracts_held_short margin_liquidation_price`)
+	script := `strategy("Metric history",initial_capital=1000,margin_long=0,margin_short=0)
+if bar_index == 0
+    strategy.entry("first",strategy.long,qty=2)
+if bar_index == 1
+    strategy.close("first")
+if bar_index == 2
+    strategy.entry("second",strategy.short)
+if bar_index == 4
+    strategy.close("second",immediately=true)
+`
+	for _, name := range metrics {
+		script += `capture_metric("` + name + `",strategy.` + name + `,strategy.` + name + `[1],strategy.` + name + "[2])\n"
+	}
+	strategyRun(t, e, script)
+	for _, name := range metrics {
+		t.Run(name, func(t *testing.T) {
+			rows := observed[name]
+			if len(rows) != 5 {
+				t.Fatalf("got %d observations, want 5", len(rows))
+			}
+			for bar, row := range rows {
+				for offset, got := range []interface{}{row.previous, row.older} {
+					index := bar - offset - 1
+					var want interface{} = math.NaN()
+					if index >= 0 {
+						want = rows[index].current
+					}
+					if isNA(want) {
+						if !isNA(got) {
+							t.Fatalf("bar %d [%d]: got %v, want na", bar, offset+1, got)
+						}
+					} else if expected, numeric := toFloat(want); numeric {
+						n, ok := toFloat(got)
+						if !ok || math.IsNaN(n) || math.Abs(n-expected) > 1e-9 {
+							t.Fatalf("bar %d [%d]: got %v, want %v", bar, offset+1, got, want)
+						}
+					} else if got != want {
+						t.Fatalf("bar %d [%d]: got %v, want %v", bar, offset+1, got, want)
+					}
+				}
+			}
+		})
+	}
+	for bar, want := range []float64{0, 2, 0, -1, 0} {
+		if got, _ := toFloat(observed["position_size"][bar].current); got != want {
+			t.Fatalf("bar %d live position: got %v, want %v", bar, got, want)
+		}
+	}
+}
+
+func TestStrategyMetricHistoryBeforePostEvaluationFills(t *testing.T) {
+	e := strategyEngine(brokerCandle{100, 100, 100, 100}, brokerCandle{110, 110, 110, 110})
+	rt := strategyRun(t, e, `strategy("Close fill history",margin_long=0,margin_short=0,process_orders_on_close=true)
+if bar_index == 0
+    strategy.entry("L",strategy.long)
+position = strategy.position_size
+previous_direct = strategy.position_size[1]
+previous_variable = position[1]
+before_history = strategy.position_size[100]`)
+	assertStrategyNumber(t, rt, "position", 1)
+	assertStrategyNumber(t, rt, "previous_variable", 0)
+	assertStrategyNumber(t, rt, "previous_direct", 0)
+	if got, _ := rt.Value("before_history"); !isNA(got) {
+		t.Fatalf("unavailable history: got %v, want na", got)
+	}
+}
+
+func TestStrategyNamedExitEligibility(t *testing.T) {
+	for _, tc := range []struct {
+		name, script string
+		wantClosed   float64
+	}{
+		{"future_entry", `if bar_index == 0
+    strategy.exit("X","L",limit=110)
+if bar_index == 1
+    strategy.entry("L",strategy.long)`, 0},
+		{"pending_entry", `if bar_index == 0
+    strategy.entry("L",strategy.long)
+    strategy.exit("X","L",limit=110)`, 1},
+		{"open_entry", `if bar_index == 0
+    strategy.entry("L",strategy.long)
+if bar_index == 1
+    strategy.exit("X","L",limit=110)`, 1},
+		{"cancelled_pending_identity", `if bar_index == 0
+    strategy.entry("L",strategy.long,stop=105)
+    strategy.exit("X","L",limit=110)
+if bar_index == 1
+    strategy.cancel("L")
+    strategy.entry("L",strategy.long)`, 0},
+		{"same_id_later_trade", `if bar_index == 0
+    strategy.entry("L",strategy.long)
+    strategy.exit("X","L",limit=110)
+if bar_index == 1
+    strategy.close("L",immediately=true)
+    strategy.entry("L",strategy.long)`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := strategyRun(t, strategyEngine(
+				brokerCandle{100, 100, 100, 100},
+				brokerCandle{100, 101, 99, 100},
+				brokerCandle{100, 115, 99, 110},
+			), `strategy("Eligibility",margin_long=0,margin_short=0)
+`+tc.script+"\ncount = strategy.closedtrades")
+			assertStrategyNumber(t, rt, "count", tc.wantClosed)
+		})
+	}
+}
+
+func TestStrategyImmediateCloseAppliesDirectionalSlippage(t *testing.T) {
+	for _, tc := range []struct {
+		direction string
+		exit      float64
+	}{{"long", 109}, {"short", 111}} {
+		for _, closeCall := range []string{`strategy.close("L",immediately=true)`, `strategy.close_all(immediately=true)`} {
+			t.Run(tc.direction+"/"+closeCall, func(t *testing.T) {
+				rt := strategyRun(t, strategyEngine(brokerCandle{100, 100, 100, 100}, brokerCandle{110, 110, 110, 110}),
+					`strategy("Slippage",margin_long=0,margin_short=0,slippage=1)
+if bar_index == 0
+    strategy.entry("L",strategy.`+tc.direction+`)
+if bar_index == 1
+    `+closeCall+`
+exit_price = strategy.closedtrades.exit_price(0)`)
+				assertStrategyNumber(t, rt, "exit_price", tc.exit)
+			})
+		}
+	}
+}
+
+func TestStrategyOCANonzeroFillAndTypeIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, script string
+		size         float64
+	}{
+		{"disabled_entry", `strategy.risk.allow_entry_in(strategy.direction.short)
+if bar_index == 0
+    strategy.entry("L",strategy.long,stop=105,oca_name="g",oca_type=strategy.oca.cancel)
+    strategy.entry("S",strategy.short,stop=95,oca_name="g",oca_type=strategy.oca.cancel)`, -1},
+		{"different_types", `if bar_index == 0
+    strategy.order("L",strategy.long,qty=1,stop=105,oca_name="g",oca_type=strategy.oca.cancel)
+    strategy.order("S",strategy.short,qty=1,stop=95,oca_name="g",oca_type=strategy.oca.none)`, 0},
+		{"same_types_cancel", `if bar_index == 0
+    strategy.order("L",strategy.long,qty=1,stop=105,oca_name="g",oca_type=strategy.oca.cancel)
+    strategy.order("S",strategy.short,qty=1,stop=95,oca_name="g",oca_type=strategy.oca.cancel)`, 1},
+		{"same_types_reduce", `if bar_index == 0
+    strategy.order("L",strategy.long,qty=1,stop=105,oca_name="g",oca_type=strategy.oca.reduce)
+    strategy.order("S",strategy.short,qty=2,stop=95,oca_name="g",oca_type=strategy.oca.reduce)`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := strategyRun(t, strategyEngine(brokerCandle{100, 100, 100, 100}, brokerCandle{100, 106, 90, 100}),
+				`strategy("OCA",margin_long=0,margin_short=0)
+`+tc.script+"\nsize = strategy.position_size")
+			assertStrategyNumber(t, rt, "size", tc.size)
+		})
+	}
+}

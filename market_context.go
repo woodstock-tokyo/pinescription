@@ -191,13 +191,15 @@ func (r *Runtime) sessionFlag(name string) (interface{}, error) {
 		first, last := window.open, window.close
 		inSession := regular
 		specs := []string{s.Premarket, s.Regular, s.Postmarket}
+		used := []bool{false, regular, false}
 		if !regular {
-			for _, spec := range specs {
+			for i, spec := range specs {
 				if spec == "" {
 					continue
 				}
 				if w, ok, _ := sessionAt(open, spec); ok {
 					first, last, inSession = w.open, w.close, true
+					used[i] = true
 					break
 				}
 			}
@@ -206,18 +208,20 @@ func (r *Runtime) sessionFlag(name string) (interface{}, error) {
 			return false, nil
 		}
 		for pass := 0; pass < len(specs); pass++ {
-			for _, spec := range specs {
-				if spec == "" {
+			for i, spec := range specs {
+				if spec == "" || used[i] {
 					continue
 				}
 				for _, point := range []time.Time{first.Add(-time.Nanosecond), last} {
 					if w, ok, _ := sessionAt(point, spec); ok {
+						used[i] = true
 						if w.open.Before(first) {
 							first = w.open
 						}
 						if w.close.After(last) {
 							last = w.close
 						}
+						break
 					}
 				}
 			}

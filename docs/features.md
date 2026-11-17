@@ -165,7 +165,9 @@ All built-in indicators are also available under the `ta` namespace:
   `ta.vwap(source, anchor)` starts at the first true anchor and resets whenever
   the anchor is true. `ta.vwap(source, anchor, stdev_mult)` returns
   `[vwap, upper, lower]`, using volume-weighted population deviation.
-  Zero volume or unavailable source/volume yields `na`. Calls have independent
+  Zero volume or unavailable source/volume yields `na` for that bar without
+  contaminating the accumulated sums used by later valid bars. Calls, including
+  zero-argument `ta.vwap()` calls, have independent
   state; current-bar re-evaluation does not accumulate twice. Exchange-calendar
   daily resets are not an inferred futures/overnight trading-day calendar.
 
@@ -306,6 +308,17 @@ name, or `input#N` for anonymous/repeated names. Pine enum declarations with
 optional display titles are supported for enum parameters. Host enum choices
 may use a member name, its qualified name, or `EnumValue`. Source selections use
 `InputSource("close")` or another supported OHLC/derived source name.
+Metadata uses the constants visible at the input's declaration; later constants,
+sibling blocks, and function-local constants cannot overwrite those defaults.
+Function parameters and nonconstant locals shadow outer constants.
+
+```pine
+const int n = 2
+length = input.int(n) // Default remains 2, regardless of unused() below.
+unused() =>
+    const int n = 9
+    input.int(n) // This separate input defaults to 9.
+```
 
 This deliberately replaces the old permissive behavior where an omitted
 `defval` silently produced zero. See [api.md](api.md) for host interfaces.
@@ -424,7 +437,9 @@ Pinescription provides string manipulation functions and placeholder types for c
   use Go's RE2-compatible syntax: Java lookarounds/backreferences are **not**
   emulated and unsupported expressions produce an error.
 - `str.format_time(timestamp[, format[, timezone]])` - Calendar patterns,
-  default `yyyy-MM-dd'T'HH:mm:ss'Z'`, exchange timezone unless overridden.
+  default `yyyy-MM-dd'T'HH:mm:ssZ`, exchange timezone unless overridden.
+  The active `Z` emits the actual offset, e.g. `2025-01-01T20:00:00-0500`
+  for `2025-01-02T01:00:00Z` in New York; an explicitly quoted `'Z'` stays literal.
   Supported tokens include `y`, `M`, `d`, `E`, `D`, `w`, `H`, `h`, `m`, `s`,
   `S`, `a`, `Z`, `X`, and `z`, with quoted literals.
 - `str.format(format, args...)` - Indexed placeholders, including
@@ -449,6 +464,10 @@ Pinescription provides string manipulation functions and placeholder types for c
   also accepted. Session strings support comma-separated `HHmm-HHmm` periods,
   optional Sunday=1 day digits, and overnight sessions. Out-of-session and
   pre-history bars return `na`; session-end closes are clipped to that session.
+  Overnight daily buckets use the containing session's opening date.
+  Calendar `timeframe_bars_back` offsets follow actual adjacent buckets, including
+  shortened year-end buckets: on December 31, 2025,
+  `time_close("5M", "", "UTC", 0, 1)` is November 1, not August 1.
 - Timezones accept IANA names and fixed `UTC`/`GMT` offsets. Invalid zones are
   errors, not silent UTC fallbacks. `timestamp` accepts numeric calendar
   components (optionally prefixed by timezone) or a date string in ISO/RFC3339
@@ -466,6 +485,12 @@ timeframe. Without symbol timezone metadata, time calculations use UTC.
 Timestamp arrays must match the base-series length and have strictly increasing
 opens and closes after opens. Helpers do not infer holidays, missing bars, or
 exchange schedules. Future projected times use the configured chart step.
+Monthly projections clamp invalid days and preserve month-end anchors; inferred
+bars remain anchored to the configured final time (March 31 follows February's
+last day, not a normalized March 3). Non-month-end inferred dates retain their
+original day whenever that month permits it.
+Session first/last flags join at most one occurrence of each supplied
+pre/regular/post schedule. A regular-only `24x7` session retains daily boundaries.
 
 ### Runtime Errors and Ticker IDs
 
@@ -490,6 +515,9 @@ functions, methods, types, and enums are supported. Configure a `LibraryResolver
 before compilation; linked bytecode requires no resolver at execution time.
 Imports are namespaced, private helpers and dependencies stay out of the public
 namespace, and scalar constant library globals are isolated.
+`import` and `export` are top-level-only; nested declarations fail at compilation.
+Receiver-qualified library methods take precedence over unqualified functions
+with the same name.
 
 Libraries with executable/data-dependent globals are rejected. Cycles, alias
 collisions, excessive nesting/module count, and oversized sources are errors.
@@ -516,9 +544,21 @@ Same-context requests can use the chart data without an additional provider.
 - Global expression dependencies, functions, parameters, and supported global
   collection mutations are evaluated in the requested context. Unrelated
   plots/alerts/callbacks are not replayed. Mutable results are snapshotted.
+  Mutations are retained when their return value is assigned but unused, and
+  through reference aliases such as `b = a; b.push(5)`.
+  Series-parameter substitution includes switch selectors, matches, and bodies.
 - Limits: 40 data contexts, 128 expression streams, nested depth 16, bounded
   collection snapshots. Arbitrary mutable function-local captures and
   cross-currency conversion are not implemented; unsupported use is an error.
+  Currency is validated on every evaluation, including cached stream reuse.
+
+```pine
+a = array.from(close, 5)
+b = a
+removed = array.pop(b)
+requested = request.security("OTHER", "120", array.sum(a))
+// requested uses the requested close alone, not requested close + 5.
+```
 
 ### Footprints
 
@@ -542,7 +582,12 @@ expression, footprints describe the requested context's own bars.
 ### Native Historical Strategies — Limited Broker Model
 
 `strategy()` enables a native historical broker. It requires provider OHLC,
-`syminfo.mintick`, `syminfo.pointvalue`, and explicitly disabled margins:
+`syminfo.mintick`, `syminfo.pointvalue`, and explicitly disabled margins.
+Exact OHLC/volume lookups never substitute the default close series on a failed
+or empty load. Strategies reject invalid OHLC; other exact-data consumers receive
+`na` and retain their documented missing-data policies.
+
+For example:
 
 ```pine
 strategy("Example", initial_capital = 10000, margin_long = 0, margin_short = 0)
@@ -562,17 +607,34 @@ Implemented behavior:
   existing positions. `exit` supports absolute or tick-relative take-profit /
   stop-loss brackets with first-hit OCO behavior. `close`, `close_all`,
   `cancel`, and `cancel_all` are supported.
+  Named exits capture eligible open trades and pending entry identities when
+  called; an unmatched named exit cannot capture an entry created on a later bar.
 - `close(..., immediately=true)` closes during evaluation;
   `process_orders_on_close` processes eligible orders after evaluation, without
   a second script calculation.
+  Immediate market closes still apply direction-dependent slippage.
 - Fixed/cash/equity-percent sizing, commission modes, slippage, and partial
   closes are supported. Cash/percent sizing requires `syminfo.mincontract`;
   default order quantity is calculated at the fill price.
 - Explicit-quantity OCA cancellation/reduction groups, `risk.allow_entry_in`,
   and `risk.max_position_size` are supported.
+  OCA groups are identified by both name and type, and affect siblings only
+  after a nonzero executed fill.
 - Position/account metrics, open/closed trade counts, profits/fees, and
   per-trade getters are available. Conversion helpers support same-currency
   values; cross-currency broker accounting is not implemented.
+  Historical scalar metrics (e.g. `strategy.position_size[1]`) use per-bar
+  calculation snapshots; unavailable history is `na`. Current-bar reads remain
+  live. Snapshots precede optional post-evaluation close fills so they agree
+  with script variables recorded during that calculation.
+
+```pine
+strategy("Entry transition", margin_long=0, margin_short=0)
+if bar_index == 0
+    strategy.entry("L", strategy.long)
+opened = strategy.position_size > 0 and strategy.position_size[1] == 0
+// opened is true on bar 1, when the next-open market entry fills.
+```
 
 **Not full TradingView broker parity:** margin liquidation, trailing stops,
 tick/fill recalculation, bar magnifier, limit verification, combined relative/

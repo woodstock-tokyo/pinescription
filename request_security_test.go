@@ -46,6 +46,102 @@ func requestTestEngine(values ...float64) (*Engine, *securityTestSource) {
 	e.SetSecurityDataProvider(source)
 	return e, source
 }
+
+func TestSecurityCachedStreamValidatesEveryCurrency(t *testing.T) {
+	for _, request := range []string{"request.security", "request.security_lower_tf"} {
+		t.Run(request, func(t *testing.T) {
+			e, source := requestTestEngine(10, 20)
+			tf := "120"
+			if strings.HasSuffix(request, "_lower_tf") {
+				tf = "30"
+			}
+			data := source.contexts["OTHER/"+tf]
+			data.Info["currency"] = "USD"
+			source.contexts["OTHER/"+tf] = data
+			code, err := e.Compile(`currency = bar_index == 0 ? "USD" : "EUR"
+result = ` + request + `("OTHER","` + tf + `",close,currency=currency)`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = e.Execute(code); err == nil || !strings.Contains(err.Error(), "currency conversion") {
+				t.Fatalf("got %v, want conversion error on cached stream", err)
+			}
+			if len(source.calls) != 1 {
+				t.Fatalf("expected one cached stream, got %v", source.calls)
+			}
+		})
+	}
+}
+
+func TestSecuritySubstitutesSwitchParameters(t *testing.T) {
+	rt := &Runtime{}
+	if body, err := rt.requestSwitchBody(nil, nil); err != nil || body != nil {
+		t.Fatalf("nil switch body changed: %v, %v", body, err)
+	}
+	if _, err := rt.requestSwitchBody([]Stmt{{Kind: "decl"}}, nil); err == nil || !strings.Contains(err.Error(), "unsupported statement kind") {
+		t.Fatalf("got %v, want unsupported switch statement error", err)
+	}
+	for name, expression := range map[string]string{
+		"selector":  "switch x\n        200 => x + 1\n        => x - 1",
+		"match":     "switch close\n        x => x + 2\n        => 0",
+		"default":   "switch x\n        0 => 0\n        => x + 3",
+		"condition": "switch\n        x > 150 => x + 4\n        => x",
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, _ := requestTestEngine(10, 20, 30, 40)
+			// Parenthesized multiline calls suppress lexer indentation. Build
+			// the switch argument from its separately parsed expression AST.
+			switchProgram, err := parseProgram("selected = " + strings.ReplaceAll(expression, "        ", "    "))
+			if err != nil {
+				t.Fatal(err)
+			}
+			code, err := e.Compile(`fetch(x) => request.security("OTHER","120",x)
+result = fetch(close)`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			program, err := e.decodeProgramCached(code)
+			if err != nil {
+				t.Fatal(err)
+			}
+			program.Functions["fetch"].Expr.Args[2] = switchProgram.Stmts[0].Expr
+			lowerProgram(&program)
+			code, err = encodeProgram(program)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]float64{"selector": 201, "match": 202, "default": 203, "condition": 204}[name]
+			if got, err := e.Execute(code); err != nil || got != want {
+				t.Fatalf("got %v, %v; want %v", got, err, want)
+			}
+		})
+	}
+}
+
+func TestSecurityRetainsAssignedMutationsAndAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name, setup, expr string
+		want              float64
+	}{
+		{"assigned_pop", "a = array.from(close,5)\nremoved = array.pop(a)", "array.sum(a)", 200},
+		{"nested_pop", "a = array.from(close,5)\nremoved = array.pop(a) + 1", "array.sum(a)", 200},
+		{"alias", "a = array.from(close)\nb = a\narray.push(b,5)", "array.sum(a)", 205},
+		{"alias_method", "a = array.from(close)\nb = a\nb.push(5)", "array.sum(a)", 205},
+		{"alias_chain", "a = array.from(close)\nb = a\nc = b\nremoved = c.pop()", "array.size(a)", 0},
+		{"alias_reverse", "a = array.from(close)\nb = a\na.push(5)", "array.sum(b)", 205},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _ := requestTestEngine(10, 20, 30, 40)
+			code, err := e.Compile(tc.setup + "\nresult = request.security(\"OTHER\",\"120\"," + tc.expr + ")")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, err := e.Execute(code); err != nil || got != tc.want {
+				t.Fatalf("got %v, %v; want %v", got, err, tc.want)
+			}
+		})
+	}
+}
 func TestSecurityAlignmentIsolationAndDependencies(t *testing.T) {
 	e, source := requestTestEngine(10, 20, 30, 40)
 	var observed [][]interface{}

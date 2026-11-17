@@ -774,6 +774,7 @@ func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, err
 	seriesByKey := map[string]SeriesExtended{}
 	seriesByKey[makeSeriesKey(activeSymbol, activeValueType)] = baseSeries
 	rt := newRuntime(program, functions, seriesByKey, catalog.valueTypesBySymbol, activeSymbol, activeValueType, timeframe, session, currentTime, startTime, baseSeries.Length(), catalog.fetchSeries, e.appendLog, e.alertSink)
+	rt.inferredStart = e.startTime.IsZero()
 	rt.userFnParamSpecs = functionParams
 	rt.inputBindings = inputs
 	rt.applyMarketContext(context)
@@ -799,6 +800,7 @@ func (e *Engine) ExecuteWithRuntime(bytecode []byte) (*Runtime, interface{}, err
 		if err := rt.execTopLevel(); err != nil {
 			return nil, nil, err
 		}
+		rt.snapshotStrategyMetrics()
 		if err := rt.strategyEndBar(); err != nil {
 			return nil, nil, err
 		}

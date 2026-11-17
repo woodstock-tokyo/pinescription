@@ -78,6 +78,39 @@ result = point.twice()`)
 	}
 }
 
+func TestImportedMethodWinsOverUnqualifiedFunction(t *testing.T) {
+	e := NewEngine()
+	e.SetLibraryResolver(LibrarySources{"me/Counters/1": `library("Counters")
+export type Counter
+    float x
+export method value(Counter self) => self.x * 2`})
+	code, err := e.Compile(`import me/Counters/1 as lib
+value(x) => 99
+obj = lib.Counter.new(3)
+result = obj.value()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.RegisterMarketDataProvider(providerWithClose("TEST", 1))
+	if got, err := e.Execute(code); err != nil || got != float64(6) {
+		t.Fatalf("got %v, %v; want 6", got, err)
+	}
+}
+
+func TestLibraryDeclarationsRequireTopLevel(t *testing.T) {
+	for _, script := range []string{
+		"if true\n    import me/A/1 as a",
+		"unused() =>\n    import me/A/1 as a",
+		"if true\n    export f(x) => x",
+		"if true\n    export type Point\n        float x",
+	} {
+		_, err := NewEngine().Compile(script)
+		if err == nil || !strings.Contains(err.Error(), "must appear at top level") {
+			t.Fatalf("%s: got %v, want compile-time scope error", script, err)
+		}
+	}
+}
+
 func TestLibraryErrorsAndPrivateMembers(t *testing.T) {
 	for _, tc := range []struct {
 		source    string

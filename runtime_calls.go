@@ -69,6 +69,10 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 	}
 	defer releaseArgs()
 
+	if name == "ta.vwap" && len(rawArgs) == 0 {
+		// Argument-bearing calls already key state by their source expression.
+		return r.builtinVWAP([]*Expr{expr}, args)
+	}
 	if isHookableDrawingFunctionName(name) {
 		if userFn, ok := r.userFns[name]; ok {
 			return r.invokeRegisteredFunction(userFn, args, useArgPool)
@@ -123,13 +127,15 @@ func (r *Runtime) evalCall(expr *Expr) (interface{}, error) {
 					return v, err
 				}
 			}
-			fn, found := r.program.Functions[methodName]
-			if !found {
-				if instance, ok := recv.(*customTypeInstance); ok {
-					if dot := strings.LastIndex(instance.TypeName, "."); dot >= 0 {
-						fn, found = r.program.Functions[instance.TypeName[:dot+1]+methodName]
-					}
+			var fn FunctionDef
+			var found bool
+			if instance, ok := recv.(*customTypeInstance); ok {
+				if dot := strings.LastIndex(instance.TypeName, "."); dot >= 0 {
+					fn, found = r.program.Functions[instance.TypeName[:dot+1]+methodName]
 				}
+			}
+			if !found {
+				fn, found = r.program.Functions[methodName]
 			}
 			if found {
 				prev := r.scriptCallPath

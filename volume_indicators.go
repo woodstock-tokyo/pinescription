@@ -22,7 +22,7 @@ func (r *Runtime) exactSeriesValue(valueType string, bar int) float64 {
 	if bar < 0 || !r.valueTypesBySymbol[r.activeSymbol][valueType] {
 		return math.NaN()
 	}
-	ser, err := r.getSeries(r.activeSymbol, valueType)
+	ser, err := r.getExactSeries(r.activeSymbol, valueType)
 	if err != nil || bar >= ser.Length() {
 		return math.NaN()
 	}

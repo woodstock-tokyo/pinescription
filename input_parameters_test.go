@@ -104,3 +104,68 @@ func TestInputValidationPrecedesProviderAndScript(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestInputDefaultsUseLexicalDeclarationScopes(t *testing.T) {
+	e := NewEngine()
+	code, err := e.Compile(`const int n = 2
+global_value = input.int(n)
+if true
+    const int n = 5
+    block_value = input.int(n)
+after_block = input.int(n)
+a_unused() =>
+    const int n = 9
+    local_value = input.int(n)
+    local_value
+b_sibling() =>
+    sibling_value = input.int(n)
+    sibling_value`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defs, err := e.InputParameters(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]float64{"global_value": 2, "block_value": 5, "after_block": 2, "local_value": 9, "sibling_value": 2}
+	if len(defs) != len(want) {
+		t.Fatalf("got %d definitions, want %d", len(defs), len(want))
+	}
+	for _, def := range defs {
+		expected, exists := want[def.ID]
+		if !exists || def.Default != expected {
+			t.Fatalf("input %s: got default %v, want %v", def.ID, def.Default, expected)
+		}
+	}
+}
+
+func TestInputDefaultsCannotUseInvisibleConstants(t *testing.T) {
+	for name, script := range map[string]string{
+		"later_declaration": `value = input.int(n)
+const int n = 2`,
+		"sibling_block": `if true
+    const int n = 9
+value = input.int(n)`,
+		"function_parameter_shadow": `const int n = 2
+unused(n) => input.int(n)`,
+		"nonconstant_local_shadow": `const int n = 2
+unused() =>
+    n = close
+    input.int(n)`,
+		"loop_index_shadow": `const int n = 2
+for n = 0 to 1
+    value = input.int(n)`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := NewEngine()
+			code, err := e.Compile(script)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = e.InputParameters(code)
+			if err == nil || !strings.Contains(err.Error(), "must be constant") {
+				t.Fatalf("got %v, want out-of-scope/nonconstant default error", err)
+			}
+		})
+	}
+}

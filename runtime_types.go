@@ -135,6 +135,7 @@ type Runtime struct {
 	timeframeSecsOK bool
 	currentTime     time.Time
 	startTime       time.Time
+	inferredStart   bool
 	logSink         func(level, message string, ts time.Time)
 	alertSink       func(AlertEvent)
 	barStep         time.Duration

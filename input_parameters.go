@@ -6,6 +6,7 @@ package pinescription
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"sort"
@@ -67,6 +68,7 @@ type inputBinding struct {
 type inputCall struct {
 	expr  *Expr
 	owner string
+	env   map[string]interface{}
 }
 
 func inputConstants(program Program) map[string]interface{} {
@@ -162,12 +164,18 @@ func discoverInputs(program Program) ([]InputParameter, []inputCall, error) {
 	env := inputConstants(program)
 	var walkExpr func(*Expr, string)
 	var walkStmts func([]Stmt)
+	walkBlock := func(stmts []Stmt) {
+		parent := env
+		env = maps.Clone(parent)
+		walkStmts(stmts)
+		env = parent
+	}
 	walkExpr = func(expr *Expr, owner string) {
 		if expr == nil {
 			return
 		}
 		if expr.Kind == "call" && expr.Left != nil && (expr.Left.Name == "input" || strings.HasPrefix(expr.Left.Name, "input.")) {
-			calls = append(calls, inputCall{expr, owner})
+			calls = append(calls, inputCall{expr: expr, owner: owner, env: maps.Clone(env)})
 			return
 		}
 		walkExpr(expr.Left, "")
@@ -182,9 +190,9 @@ func discoverInputs(program Program) ([]InputParameter, []inputCall, error) {
 		walkExpr(expr.SwitchExpr, "")
 		for _, c := range expr.Cases {
 			walkExpr(c.Match, "")
-			walkStmts(c.Body)
+			walkBlock(c.Body)
 		}
-		walkStmts(expr.Default)
+		walkBlock(expr.Default)
 	}
 	walkStmts = func(stmts []Stmt) {
 		for _, stmt := range stmts {
@@ -200,22 +208,37 @@ func discoverInputs(program Program) ([]InputParameter, []inputCall, error) {
 			walkExpr(stmt.By, "")
 			walkExpr(stmt.ForIn, "")
 			walkExpr(stmt.SwitchExpr, "")
-			walkStmts(stmt.Then)
-			walkStmts(stmt.Else)
+			walkBlock(stmt.Then)
+			walkBlock(stmt.Else)
+			bodyEnv := env
+			env = maps.Clone(env)
+			delete(env, stmt.ForVar)
+			for _, name := range stmt.TupleNames {
+				delete(env, name)
+			}
 			walkStmts(stmt.Body)
-			walkStmts(stmt.Default)
+			env = bodyEnv
+			walkBlock(stmt.Default)
 			for _, c := range stmt.Cases {
 				walkExpr(c.Match, "")
-				walkStmts(c.Body)
+				walkBlock(c.Body)
 			}
-			if stmt.Kind == "decl" && stmt.Const {
-				if v, err := constantParameter(stmt.Expr, env); err == nil {
+			if stmt.Kind == "decl" {
+				v, err := constantParameter(stmt.Expr, env)
+				delete(env, stmt.Name)
+				if stmt.Const && err == nil {
 					env[stmt.Name] = v
+				}
+			} else if stmt.Kind == "assign" || stmt.Kind == "tuple_assign" {
+				delete(env, stmt.Name)
+				for _, name := range stmt.TupleNames {
+					delete(env, name)
 				}
 			}
 		}
 	}
 	walkStmts(program.Stmts)
+	globals := env
 	names := make([]string, 0, len(program.Functions))
 	for name := range program.Functions {
 		names = append(names, name)
@@ -223,6 +246,10 @@ func discoverInputs(program Program) ([]InputParameter, []inputCall, error) {
 	sort.Strings(names)
 	for _, name := range names {
 		fn := program.Functions[name]
+		env = maps.Clone(globals)
+		for _, param := range fn.Params {
+			delete(env, param)
+		}
 		walkExpr(fn.Expr, "")
 		walkStmts(fn.Body)
 	}
@@ -278,7 +305,7 @@ func discoverInputs(program Program) ([]InputParameter, []inputCall, error) {
 			if key == "defval" && kind == "source" && expr != nil && expr.Kind == "ident" && isPriceIdentifierName(expr.Name) {
 				v = InputSource(expr.Name)
 			} else {
-				v, err = constantParameter(expr, env)
+				v, err = constantParameter(expr, call.env)
 			}
 			if err != nil {
 				return nil, nil, fmt.Errorf("input %s %s: %w", id, key, err)

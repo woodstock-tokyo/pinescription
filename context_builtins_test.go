@@ -5,11 +5,194 @@
 package pinescription
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
 	"time"
 )
+
+type unavailableExactProvider struct {
+	*testProvider
+	failType string
+	empty    bool
+}
+
+func (p *unavailableExactProvider) GetSeries(key string) (SeriesExtended, error) {
+	if strings.HasSuffix(key, "|"+p.failType) {
+		if p.empty {
+			return mkSeries(), nil
+		}
+		return nil, fmt.Errorf("unavailable %s", p.failType)
+	}
+	return p.testProvider.GetSeries(key)
+}
+
+func TestExactSeriesNeverFallsBackToClose(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		for _, valueType := range []string{"open", "high", "low", "volume", "bid", "ask"} {
+			t.Run(fmt.Sprintf("%s/empty=%v", valueType, empty), func(t *testing.T) {
+				base := &testProvider{data: map[string]SeriesExtended{}, timeframe: "60"}
+				for _, vt := range []string{"open", "high", "low", "close", "volume", "bid", "ask"} {
+					base.data["TEST|"+vt] = mkSeries(10)
+				}
+				e := NewEngine()
+				e.RegisterMarketDataProvider(&unavailableExactProvider{base, valueType, empty})
+				e.SetSymbolInfo("TEST", SymbolInfo{"mintick": 1.0, "pointvalue": 1.0, "currency": "USD"})
+				code, err := e.Compile("result = close")
+				if err != nil {
+					t.Fatal(err)
+				}
+				rt, _, err := e.ExecuteWithRuntime(code)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer rt.Release()
+				if got := rt.exactSeriesValue(valueType, 0); !math.IsNaN(got) {
+					t.Fatalf("exact %s: got %v, want na", valueType, got)
+				}
+				ser, err := rt.getSeries("TEST", valueType)
+				if err != nil || ser.Last(0) != 10 {
+					t.Fatalf("legacy fallback changed: %v, %v", ser, err)
+				}
+				if valueType == "open" || valueType == "high" || valueType == "low" {
+					code, err = e.Compile(`strategy("Missing OHLC",margin_long=0,margin_short=0)
+result = close`)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err = e.Execute(code); err == nil || !strings.Contains(err.Error(), "invalid initial "+valueType) {
+						t.Fatalf("got %v, want missing OHLC error", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestVWAPMissingAndZeroBarsDoNotPoisonAccumulation(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		source, volume []float64
+	}{
+		{"missing_source", []float64{10, math.NaN(), 30}, []float64{1, 1, 1}},
+		{"missing_volume", []float64{10, 20, 30}, []float64{1, math.NaN(), 1}},
+		{"zero_volume", []float64{10, 20, 30}, []float64{1, 0, 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewEngine()
+			e.RegisterMarketDataProvider(&testProvider{data: map[string]SeriesExtended{
+				"TEST|close": mkSeries(tc.source...), "TEST|volume": mkSeries(tc.volume...),
+			}, timeframe: "60"})
+			e.SetStartTime(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+			code, err := e.Compile(`[mean,upper,lower] = ta.vwap(close,bar_index==0,1)
+missing_mean = mean[1]
+missing_upper = upper[1]
+missing_lower = lower[1]`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt, _, err := e.ExecuteWithRuntime(code)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rt.Release()
+			for name, want := range map[string]float64{"mean": 20, "upper": 30, "lower": 10} {
+				got, _ := rt.Value(name)
+				if got != want {
+					t.Fatalf("%s: got %v, want %v", name, got, want)
+				}
+				if missing, _ := rt.Value("missing_" + name); !isNA(missing) {
+					t.Fatalf("missing %s: got %v, want na", name, missing)
+				}
+			}
+		})
+	}
+}
+
+func TestVWAPZeroArgumentCallsHaveIndependentState(t *testing.T) {
+	e := NewEngine()
+	e.RegisterMarketDataProvider(&testProvider{data: map[string]SeriesExtended{
+		"TEST|close": mkSeries(10, 20, 30), "TEST|high": mkSeries(10, 20, 30),
+		"TEST|low": mkSeries(10, 20, 30), "TEST|volume": mkSeries(1, 1, 1),
+	}, timeframe: "60"})
+	e.SetStartTime(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	code, err := e.Compile(`first = ta.vwap()
+second = bar_index == 0 ? na : ta.vwap()
+bare = ta.vwap`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, _, err := e.ExecuteWithRuntime(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Release()
+	for name, want := range map[string]float64{"first": 20, "second": 25, "bare": 20} {
+		if got, _ := rt.Value(name); got != want {
+			t.Fatalf("%s: got %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestCalendarBucketReviewRegressions(t *testing.T) {
+	for _, tc := range []struct{ name, date, expression, want string }{
+		{"overnight_open", "2025-01-07T01:00:00Z", `time("1D","1800-1700:23456","UTC")`, "2025-01-06T18:00:00Z"},
+		{"overnight_close", "2025-01-07T01:00:00Z", `time_close("1D","1800-1700:23456","UTC")`, "2025-01-07T17:00:00Z"},
+		{"previous_clipped_month_close", "2025-12-31T12:00:00Z", `time_close("5M","","UTC",0,1)`, "2025-11-01T00:00:00Z"},
+		{"previous_clipped_month_open", "2025-01-01T12:00:00Z", `time("5M","","UTC",0,1)`, "2024-11-01T00:00:00Z"},
+		{"next_clipped_month_close", "2025-11-01T12:00:00Z", `time_close("5M","","UTC",0,-1)`, "2026-06-01T00:00:00Z"},
+		{"previous_clipped_day_close", "2026-01-01T12:00:00Z", `time_close("2D","","UTC",0,1)`, "2026-01-01T00:00:00Z"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewEngine()
+			e.RegisterMarketDataProvider(providerWithClose("TEST", 1))
+			start, _ := time.Parse(time.RFC3339, tc.date)
+			e.SetStartTime(start)
+			code, err := e.Compile("result = " + tc.expression)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := e.Execute(code)
+			want, _ := time.Parse(time.RFC3339, tc.want)
+			if err != nil || got != float64(want.UnixMilli()) {
+				t.Fatalf("got %v, %v; want %s", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestMonthlyInferredTimesKeepFinalAnchor(t *testing.T) {
+	for _, date := range []string{"2025-03-31T12:34:56Z", "2024-03-31T12:34:56Z", "2025-03-30T12:34:56Z", "2025-03-15T12:34:56Z"} {
+		t.Run(date, func(t *testing.T) {
+			final, _ := time.Parse(time.RFC3339, date)
+			e := NewEngine()
+			p := providerWithClose("TEST", 1, 2)
+			p.timeframe = "1M"
+			e.RegisterMarketDataProvider(p)
+			e.SetCurrentTime(final)
+			code, err := e.Compile("result = time\nprevious = time[1]")
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt, _, err := e.ExecuteWithRuntime(code)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rt.Release()
+			if got, _ := rt.Value("result"); got != float64(final.UnixMilli()) {
+				t.Fatalf("got %v, want final %s", got, final)
+			}
+			previous := shiftTimeframe(final, -1, "1M")
+			if got, _ := rt.Value("previous"); got != float64(previous.UnixMilli()) {
+				t.Fatalf("got previous %v, want %s", got, previous)
+			}
+			if final.Day() == 31 && shiftTimeframe(previous, 1, "1M") != final {
+				t.Fatal("month-end shifts are not inverse")
+			}
+		})
+	}
+}
 
 func TestMarketContextAndCalendarAPIs(t *testing.T) {
 	e := NewEngine()
@@ -76,6 +259,78 @@ func TestHistoricalBarstateAndSessionFlags(t *testing.T) {
 		if !g.history || !g.confirmed {
 			t.Fatal(g)
 		}
+	}
+}
+
+func TestFormatTimeDefaultEmitsActualTimezoneOffset(t *testing.T) {
+	for _, tc := range []struct{ zone, timestamp, want string }{
+		{"America/New_York", "2025-01-02T01:00:00Z", "2025-01-01T20:00:00-0500"},
+		{"America/New_York", "2025-07-02T01:00:00Z", "2025-07-01T21:00:00-0400"},
+		{"UTC", "2025-01-02T01:00:00Z", "2025-01-02T01:00:00+0000"},
+		{"UTC+5:45", "2025-01-02T01:00:00Z", "2025-01-02T06:45:00+0545"},
+	} {
+		t.Run(tc.zone+"/"+tc.timestamp, func(t *testing.T) {
+			e := NewEngine()
+			e.RegisterMarketDataProvider(providerWithClose("TEST", 1))
+			e.SetSymbolInfo("TEST", SymbolInfo{"timezone": tc.zone})
+			code, err := e.Compile(`result = str.format_time(timestamp("` + tc.timestamp + `"))`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt, _, err := e.ExecuteWithRuntime(code)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rt.Release()
+			if got, _ := rt.Value("result"); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestContinuousSessionRetainsDailyBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name, spec, timeframe   string
+		hour, barsPerDay, count int
+	}{
+		{"24x7_hourly", "24x7", "60", 0, 24, 48},
+		{"midnight_hourly", "0000-0000", "60", 0, 24, 48},
+		{"overnight_hourly", "1700-1700", "60", 17, 24, 48},
+		{"24x7_daily", "24x7", "1D", 0, 1, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			values := make([]float64, tc.count)
+			e := NewEngine()
+			p := providerWithClose("TEST", values...)
+			p.timeframe = tc.timeframe
+			e.RegisterMarketDataProvider(p)
+			e.SetStartTime(time.Date(2025, 1, 1, tc.hour, 0, 0, 0, time.UTC))
+			e.SetMarketSessions("TEST", MarketSessions{Regular: tc.spec})
+			var got [][4]bool
+			e.RegisterFunction("capture_session", func(args ...interface{}) (interface{}, error) {
+				got = append(got, [4]bool{args[0].(bool), args[1].(bool), args[2].(bool), args[3].(bool)})
+				return nil, nil
+			})
+			code, err := e.Compile(`capture_session(session.isfirstbar,session.islastbar,session.isfirstbar_regular,session.islastbar_regular)`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt, _, err := e.ExecuteWithRuntime(code)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rt.Release()
+			if len(got) != tc.count {
+				t.Fatalf("got %d observations, want %d", len(got), tc.count)
+			}
+			for bar, flags := range got {
+				first, last := bar%tc.barsPerDay == 0, bar%tc.barsPerDay == tc.barsPerDay-1
+				if flags != [4]bool{first, last, first, last} {
+					t.Fatalf("bar %d: got %v, want %v", bar, flags, [4]bool{first, last, first, last})
+				}
+			}
+		})
 	}
 }
 

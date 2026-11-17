@@ -97,7 +97,7 @@ func (r *Runtime) builtinFormatTime(args []interface{}) (interface{}, error) {
 	if math.IsNaN(n) {
 		return "NaN", nil
 	}
-	pattern := "yyyy-MM-dd'T'HH:mm:ss'Z'"
+	pattern := "yyyy-MM-dd'T'HH:mm:ssZ"
 	loc := r.exchangeTimezone()
 	if len(args) > 1 {
 		s, ok := args[1].(string)
@@ -185,13 +185,14 @@ func (r *Runtime) builtinVWAP(raw []*Expr, args []interface{}) (interface{}, err
 		price = (h + l + c) / 3
 	}
 	volume := r.exactSeriesValue("volume", idx)
-	if current.started {
+	valid := !math.IsNaN(price) && !math.IsNaN(volume) && volume != 0
+	if current.started && valid {
 		current.pv += price * volume
 		current.volume += volume
 		current.ppv += price * price * volume
 	}
 	vwap := math.NaN()
-	if current.started && current.volume != 0 {
+	if current.started && valid && current.volume != 0 {
 		vwap = current.pv / current.volume
 	}
 	var out interface{} = vwap

@@ -794,7 +794,7 @@ func (r *Runtime) timesAtBar(idx int) (time.Time, time.Time, time.Time) {
 	if len(r.marketContext.bars) > 0 && idx >= len(r.marketContext.bars) {
 		last := r.marketContext.bars[len(r.marketContext.bars)-1]
 		open := shiftTimeframe(last.Open, idx-len(r.marketContext.bars)+1, r.timeframe)
-		close := shiftTimeframe(open, 1, r.timeframe)
+		close := shiftTimeframe(last.Open, idx-len(r.marketContext.bars)+2, r.timeframe)
 		utc := open.UTC()
 		return open, close, time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
 	}
@@ -806,7 +806,13 @@ func (r *Runtime) timesAtBar(idx int) (time.Time, time.Time, time.Time) {
 		base = time.Now().UTC()
 	}
 	open := shiftTimeframe(base, idx, r.timeframe).UTC()
-	close := shiftTimeframe(open, 1, r.timeframe)
+	close := shiftTimeframe(base, idx+1, r.timeframe).UTC()
+	if r.inferredStart {
+		// Infer every monthly bar from the original final-time anchor, not
+		// from a potentially clamped February start date.
+		open = shiftTimeframe(r.currentTime, idx-r.expectedBars+1, r.timeframe).UTC()
+		close = shiftTimeframe(r.currentTime, idx-r.expectedBars+2, r.timeframe).UTC()
+	}
 	trading := time.Date(open.Year(), open.Month(), open.Day(), 0, 0, 0, 0, time.UTC)
 	return open, close, trading
 }
