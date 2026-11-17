@@ -7,7 +7,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 # Supported Features
 
 Reference of supported Pine Script v6 features and their execution limits.
-The numbered PineTS comparison is tracked in [api-parity.md](api-parity.md).
+Pine Script v6 defines the intended behavior, not every PineTS fallback or
+extension. This is a supported subset, not a claim of complete TradingView
+compatibility. Provider requirements, compatibility extensions, and
+[unsupported features](#unsupported-features) are documented below.
 
 ## Language Core
 
@@ -663,13 +666,10 @@ opened = strategy.position_size > 0 and strategy.position_size[1] == 0
 // opened is true on bar 1, when the next-open market entry fills.
 ```
 
-**Not full TradingView broker parity:** margin liquidation, trailing stops,
-tick/fill recalculation, bar magnifier, limit verification, combined relative/
-absolute exit legs, full FIFO reassignment/reservations, order-fill alerts, and
-four remaining risk rules are not implemented. Unsupported options error rather
-than silently approximating these features. See the remaining checklist in
-[api-parity.md](api-parity.md). Ledger/excursion statistics have deterministic
-tests but are not certified against every TradingView reporting convention.
+**Not full TradingView broker parity:** unsupported options error rather than
+silently approximating advanced broker behavior. See
+[Strategy APIs](#strategy-apis) for the remaining broker/risk limitations and
+validation scope.
 
 ### Built-in Type Placeholders
 
@@ -699,9 +699,25 @@ request hooks can override native behavior or provide unsupported functions.
 
 ### Strategy APIs
 
-The native broker supports the subset above. Advanced options and remaining risk
-rules return explicit errors. Strategy operations require a `strategy()`
-declaration unless overridden by a registered host hook.
+The native broker supports the [historical subset above](#native-historical-strategies--limited-broker-model).
+Strategy operations require a `strategy()` declaration unless overridden by a
+registered host hook. Unsupported options return explicit errors:
+
+- **Broker execution:** margin liquidation (native mode requires explicit zero
+  margins), trailing stops, fill/tick recalculation, bar magnifier, and limit-fill
+  verification are not implemented. Historical execution has no live-tick
+  rollback.
+- **Exit/accounting behavior:** cross-currency accounting, combined relative/
+  absolute exit-leg precedence, FIFO reassignment across distinct entry IDs,
+  full exit reservation semantics, and order-fill alerts are not implemented.
+- **Risk rules:** `strategy.risk.max_cons_loss_days`,
+  `strategy.risk.max_drawdown`, `strategy.risk.max_intraday_filled_orders`, and
+  `strategy.risk.max_intraday_loss` are unsupported. `allow_entry_in` and
+  `max_position_size` are implemented.
+
+The broker, ledger, and excursion statistics are tested against deterministic,
+hand-calculated fixtures, not certified against every TradingView strategy
+field, reporting convention, or fill scenario.
 
 ### Request APIs
 
@@ -709,6 +725,12 @@ declaration unless overridden by a registered host hook.
 native implementations with the limits above. Financial, economic,
 corporate-action, Quandl, currency-rate, and seed data functions remain
 unsupported without host hooks. Data-less placeholders are not treated as data.
+Cross-currency conversion and arbitrary mutable function-local captures are
+also unsupported. The [historical request model](#historical-requests) documents
+dependency replay, alignment, and resource limits; complete TradingView
+compatibility for every expression/data-gap case has not been independently
+verified. Alternative-chart ticker IDs require genuine provider-transformed
+bars, not ordinary candles returned under another name.
 
 Exact-name custom function hooks can provide selected request behavior. Use `RegisterFunctionWithParamNames` when the Pine call may use named arguments, such as `request.security(symbol = ..., timeframe = ..., expression = ...)`.
 

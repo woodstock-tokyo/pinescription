@@ -37,6 +37,11 @@ copied by `SetInputParameters`; an optional resolver runs once per execution,
 and its returned keys take precedence. Omitted keys use validated defaults.
 Unknown IDs, invalid types/options/ranges, and missing constant defaults are
 errors. Input changes do not mutate the cached bytecode/program.
+Discovery includes inputs in function parameter defaults, even in unused
+functions. Metadata uses declaration-scope constants, not constants introduced
+by later function-body or sibling-block declarations. See
+[Pre-Execution Inputs](features.md#inputs-pre-execution-parameters) for supported input kinds and
+examples.
 
 ```go
 code, err := engine.Compile(`length = input.int(14, minval = 1)
@@ -180,7 +185,9 @@ timeframe setting.
 Security data requires a nonempty close series, equally sized value series, and
 ordered actual timestamps with `Close > Open`. Keep source series immutable for
 the runtime's lifetime. Secondary contexts have independent histories and
-indicator state. Only needed global dependencies are replayed; referenced host
+indicator state. Only needed global dependencies are replayed, including
+collection aliases and script calls that mutate needed collection parameters.
+Scalar copies do not create reference-alias dependencies. Referenced host
 functions execute normally, so hosts remain responsible for their side effects.
 Returned collections/UDTs/maps/matrices are bounded, isolated snapshots.
 
@@ -207,12 +214,16 @@ Cash/equity-percent sizing also requires `syminfo.mincontract`.
 Market/limit/stop/stop-limit orders, basic exit brackets, closes, cancellation,
 fees/slippage, sizing, account/trade queries, and two risk rules are implemented.
 Pending orders run before bar evaluation; optional close processing runs after
-it without a second calculation. Inspect results through declared Pine
+it without a second calculation. Historical scalar strategy metrics use
+calculation snapshots taken before optional post-evaluation close fills;
+current-bar reads remain live. Slippage adjusts execution prices without
+changing the chart mark used for equity. Inspect results through declared Pine
 variables and existing Runtime APIs.
 
 Advanced broker options fail explicitly. This is not full TradingView
-strategy/reporting parity; see [api-parity.md](api-parity.md) for margin,
-trailing, risk-rule, FIFO/reservation, currency, and recalculation work remaining.
+strategy/reporting parity; see [Strategy APIs](features.md#strategy-apis) for
+margin, trailing, risk-rule, FIFO/reservation, currency, recalculation, and
+independent-validation limitations.
 Existing exact-name `strategy.*` and `request.*` hooks retain precedence over
 the native implementations, including host-defined parameter metadata.
 

@@ -129,8 +129,7 @@ See [docs/features.md](docs/features.md) for the complete feature reference.
 |----------|-------------|
 | [API Reference](docs/api.md) | Complete API surface: Engine, Runtime, Provider, Alerts |
 | [Architecture and Design](docs/architecture.md) | Compilation pipeline, execution flow, streaming evaluation model |
-| [Feature Reference](docs/features.md) | Exhaustive list of supported Pine Script v6 features |
-| [PineTS API Work Order](docs/api-parity.md) | Completed additions, explicit exclusions, and remaining API work |
+| [Feature Reference](docs/features.md) | Supported Pine Script v6 subset, provider requirements, and explicit compatibility limits |
 
 ---
 
