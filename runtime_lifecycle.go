@@ -6,6 +6,7 @@ package pinescription
 
 import (
 	"math"
+	"strings"
 	"time"
 )
 
@@ -16,15 +17,26 @@ func (r *Runtime) Release() {
 	if r == nil {
 		return
 	}
+	for _, stream := range r.requestCache {
+		stream.runtime.Release()
+	}
+	r.requestCache = nil
+	r.footprintLoader = nil
+	r.strategy = nil
+	r.requests = nil
+	r.strictSeries = false
 	r.program = Program{}
 	r.userFns = nil
 	r.userFnParamSpecs = nil
 	r.rootNamespaces = nil
+	r.inputBindings = nil
+	r.marketContext = marketContext{}
 	r.seriesByKey = nil
 	r.namedSeries = nil
 	r.seriesExprByName = nil
 	r.seriesExprResolving = nil
 	r.indicatorState = nil
+	r.scriptCallPath = ""
 	r.extremaState = nil
 	r.valueTypesBySymbol = nil
 	r.loadSeries = nil
@@ -39,6 +51,7 @@ func (r *Runtime) Release() {
 	r.timeframeSecsOK = false
 	r.currentTime = time.Time{}
 	r.startTime = time.Time{}
+	r.inferredStart = false
 	r.logSink = nil
 	r.alertSink = nil
 	r.barStep = 0
@@ -68,6 +81,32 @@ func (r *Runtime) Release() {
 	r.history = nil
 	r.numericHistory = nil
 	r.historyKind = nil
+}
+
+func (r *Runtime) installNamespace(name string, members map[string]interface{}) {
+	parts := strings.Split(name, ".")
+	r.consts[parts[0]] = true
+	if len(parts) == 1 {
+		r.envStack[0][name] = members
+		r.rootNamespaces[name] = members
+		return
+	}
+	root, ok := r.rootNamespaces[parts[0]].(map[string]interface{})
+	if !ok {
+		root = map[string]interface{}{}
+		r.rootNamespaces[parts[0]] = root
+		r.envStack[0][parts[0]] = root
+	}
+	current := root
+	for _, part := range parts[1 : len(parts)-1] {
+		child, ok := current[part].(map[string]interface{})
+		if !ok {
+			child = map[string]interface{}{}
+			current[part] = child
+		}
+		current = child
+	}
+	current[parts[len(parts)-1]] = members
 }
 
 func newRuntime(
@@ -114,6 +153,7 @@ func newRuntime(
 		lastTimeIndex:       -1,
 		expectedBars:        expectedBars,
 		lastValue:           math.NaN(),
+		executingStatement:  -1,
 		envStack:            []map[string]interface{}{{}},
 		consts:              map[string]bool{},
 		declaredTypes:       map[string]string{},
@@ -144,7 +184,8 @@ func (r *Runtime) initRootEnv() {
 	root := r.envStack[0]
 	root["na"] = nil
 	root["last_bar_index"] = float64(r.expectedBars - 1)
-	barstate := map[string]interface{}{"islast": false}
+	barstate := map[string]interface{}{"islast": false, "isfirst": false,
+		"isnew": true, "ishistory": true, "isrealtime": false, "isconfirmed": true, "islastconfirmedhistory": false}
 	syminfo := map[string]interface{}{"ticker": r.activeSymbol}
 	alertNs := map[string]interface{}{
 		"freq_all":                "all",
@@ -158,7 +199,7 @@ func (r *Runtime) initRootEnv() {
 	extendNs := map[string]interface{}{"none": float64(0), "right": float64(1), "left": float64(2), "both": float64(3)}
 	sizeNs := map[string]interface{}{"tiny": float64(0), "small": float64(1), "normal": float64(2), "large": float64(3), "huge": float64(4), "auto": float64(5)}
 	textNs := map[string]interface{}{"align_left": float64(0), "align_center": float64(1), "align_right": float64(2)}
-	formatNs := map[string]interface{}{"volume": "volume", "price": "price", "percent": "percent"}
+	formatNs := map[string]interface{}{"volume": "volume", "price": "price", "percent": "percent", "mintick": "mintick", "inherit": "inherit"}
 	colorNs := map[string]interface{}{
 		"white":       "#ffffff",
 		"black":       "#000000",
@@ -188,22 +229,46 @@ func (r *Runtime) initRootEnv() {
 	root["color"] = colorNs
 	root["line"] = lineNs
 	root["label"] = labelNs
+	root["order"] = map[string]interface{}{"ascending": float64(0), "descending": float64(1)}
+	root["adjustment"] = map[string]interface{}{"none": "none", "splits": "splits", "dividends": "dividends"}
+	root["backadjustment"] = map[string]interface{}{"on": "on", "off": "off", "inherit": "inherit"}
+	root["settlement_as_close"] = map[string]interface{}{"on": "on", "off": "off", "inherit": "inherit"}
+	root["barmerge"] = map[string]interface{}{"gaps_on": "gaps_on", "gaps_off": "gaps_off", "lookahead_on": "lookahead_on", "lookahead_off": "lookahead_off"}
+	root["strategy"] = strategyConstants()
+	root["currency"] = map[string]interface{}{"NONE": "NONE", "USD": "USD", "EUR": "EUR", "JPY": "JPY", "GBP": "GBP", "CHF": "CHF", "AUD": "AUD", "CAD": "CAD", "NZD": "NZD", "HKD": "HKD", "SGD": "SGD", "CNY": "CNY"}
 
 	r.rootNamespaces = map[string]interface{}{
-		"barstate": barstate,
-		"syminfo":  syminfo,
-		"alert":    alertNs,
-		"display":  displayNs,
-		"position": positionNs,
-		"xloc":     xlocNs,
-		"yloc":     ylocNs,
-		"extend":   extendNs,
-		"size":     sizeNs,
-		"text":     textNs,
-		"format":   formatNs,
-		"color":    colorNs,
-		"line":     lineNs,
-		"label":    labelNs,
+		"barstate":            barstate,
+		"syminfo":             syminfo,
+		"alert":               alertNs,
+		"display":             displayNs,
+		"position":            positionNs,
+		"xloc":                xlocNs,
+		"yloc":                ylocNs,
+		"extend":              extendNs,
+		"size":                sizeNs,
+		"text":                textNs,
+		"format":              formatNs,
+		"color":               colorNs,
+		"line":                lineNs,
+		"label":               labelNs,
+		"order":               root["order"],
+		"adjustment":          root["adjustment"],
+		"backadjustment":      root["backadjustment"],
+		"settlement_as_close": root["settlement_as_close"],
+		"barmerge":            root["barmerge"],
+		"strategy":            root["strategy"], "currency": root["currency"],
+	}
+	for name, td := range r.program.Types {
+		if !td.Enum {
+			continue
+		}
+		members := map[string]interface{}{}
+		for _, field := range td.Fields {
+			members[field.Name] = EnumValue{Type: name, Name: field.Name, Title: field.Title}
+		}
+		r.installNamespace(name, members)
+		r.consts[name] = true
 	}
 }
 
@@ -222,6 +287,8 @@ func (r *Runtime) SetBarIndex(i int) {
 	if r.rootNamespaces != nil {
 		if bs, ok := r.rootNamespaces["barstate"].(map[string]interface{}); ok {
 			bs["islast"] = isLast
+			bs["isfirst"] = i == 0
+			bs["islastconfirmedhistory"] = isLast
 		}
 	}
 	if bs, ok := root["barstate"].(map[string]interface{}); ok {

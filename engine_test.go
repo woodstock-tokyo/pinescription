@@ -180,13 +180,14 @@ func TestNamedArgsBuiltinBindingForInputsAndBox(t *testing.T) {
 }
 
 func TestNamedArgsInputDefaultWhenDefvalOmitted(t *testing.T) {
-	v := compileExec(t, "input.int(title = 'x', minval = 1)", 1, 2, 3)
-	got, ok := v.(float64)
-	if !ok {
-		t.Fatalf("expected float64 result, got %T (%v)", v, v)
+	e := NewEngine()
+	b, err := e.Compile("input.int(title = 'x', minval = 1)")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got != 0 {
-		t.Fatalf("expected default 0, got %v", got)
+	_, err = e.InputParameters(b)
+	if err == nil || !strings.Contains(err.Error(), "requires defval") {
+		t.Fatalf("expected missing defval error, got %v", err)
 	}
 }
 
@@ -568,8 +569,8 @@ func TestRecognizedButUnsupportedKeywords(t *testing.T) {
 	e.SetDefaultSymbol("AAA")
 
 	_, err := e.Compile("import foo")
-	if err == nil || !strings.Contains(err.Error(), "recognized but not supported") {
-		t.Fatalf("expected unsupported keyword error for import, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "expected /") {
+		t.Fatalf("expected malformed import error, got %v", err)
 	}
 
 	_, err = e.Compile("do")
@@ -963,7 +964,6 @@ func TestUnsupportedFeatures(t *testing.T) {
 	tests := []string{
 		"strategy.entry(\"L\", strategy.long)",
 		"plot(close)",
-		"request.security(\"TEST\", \"D\", close)",
 	}
 	for _, script := range tests {
 		e := NewEngine()
@@ -1556,8 +1556,8 @@ func TestRuntimeExposedFunctionsAndFailoverBehavior(t *testing.T) {
 
 	keys := rt.SeriesKeys()
 	sort.Strings(keys)
-	if len(keys) < 2 || keys[0] != "EVT|close" || keys[1] != "EVT|event" {
-		t.Fatalf("expected runtime keys to include close and event, got %v", keys)
+	if len(keys) != 1 || keys[0] != "EVT|event" {
+		t.Fatalf("expected only genuinely loaded event data in the cache, got %v", keys)
 	}
 
 	if _, ok := rt.Series("EVT|close"); !ok {
@@ -2211,6 +2211,7 @@ func TestEngineTimeframeInitializationAndApplyToProviders(t *testing.T) {
 
 func TestTimeframeBuiltinsCoverage(t *testing.T) {
 	e := NewEngine()
+	e.SetStartTime(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 	p := providerWithClose("AAA", 1, 2, 3, 4)
 	p.timeframe = "60"
 	e.RegisterMarketDataProvider(p)
@@ -2237,8 +2238,8 @@ period_match + main_match + mul + intraday + minutes + dwm + sec + from_match + 
 	if err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
-	if v.(float64) != 3666 {
-		t.Fatalf("expected 3666, got %v", v)
+	if v.(float64) != 3665 {
+		t.Fatalf("expected 3665 (no new 120-minute bucket at 03:00), got %v", v)
 	}
 }
 

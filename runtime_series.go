@@ -205,19 +205,27 @@ func (r *Runtime) Value(name string) (interface{}, bool) {
 }
 
 func (r *Runtime) getSeries(symbol, valueType string) (SeriesExtended, error) {
+	return r.getSeriesWithPolicy(symbol, valueType, !r.strictSeries)
+}
+
+func (r *Runtime) getExactSeries(symbol, valueType string) (SeriesExtended, error) {
+	return r.getSeriesWithPolicy(symbol, valueType, false)
+}
+
+func (r *Runtime) getSeriesWithPolicy(symbol, valueType string, allowDefault bool) (SeriesExtended, error) {
 	if symbol == "" || valueType == "" {
 		return nil, errors.New("symbol and value_type are required")
 	}
 	candidates := []string{valueType}
 	defaultVT := r.defaultValueTypeForSymbol(symbol)
-	if defaultVT != "" && defaultVT != valueType {
+	if allowDefault && defaultVT != "" && defaultVT != valueType {
 		candidates = append(candidates, defaultVT)
 	}
 
 	var lastErr error
 	for _, vt := range candidates {
 		key := r.cachedSeriesKey(symbol, vt)
-		if ser, ok := r.seriesByKey[key]; ok && ser != nil {
+		if ser, ok := r.seriesByKey[key]; ok && ser != nil && ser.Length() > 0 {
 			return ser, nil
 		}
 		if r.loadSeries == nil {

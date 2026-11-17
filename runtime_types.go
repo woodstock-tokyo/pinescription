@@ -104,13 +104,22 @@ type Runtime struct {
 	userFns          map[string]UserFunction
 	userFnParamSpecs map[string]callParamSpec
 
-	rootNamespaces map[string]interface{}
+	rootNamespaces     map[string]interface{}
+	inputBindings      map[*Expr]inputBinding
+	marketContext      marketContext
+	requests           *requestSession
+	requestCache       map[requestKey]*requestStream
+	strictSeries       bool
+	executingStatement int
+	footprintLoader    func(string, string, BarTime) ([]FootprintLevel, error)
+	strategy           *strategyState
 
 	seriesByKey         map[string]SeriesExtended
 	namedSeries         map[string]SeriesExtended
 	seriesExprByName    map[string]*Expr
 	seriesExprResolving map[string]bool
 	indicatorState      map[string]interface{}
+	scriptCallPath      string
 	extremaState        map[extremaStateKey]*extremaIndicatorState
 	valueTypesBySymbol  map[string]map[string]bool
 	loadSeries          func(symbol, valueType string) (SeriesExtended, error)
@@ -126,6 +135,7 @@ type Runtime struct {
 	timeframeSecsOK bool
 	currentTime     time.Time
 	startTime       time.Time
+	inferredStart   bool
 	logSink         func(level, message string, ts time.Time)
 	alertSink       func(AlertEvent)
 	barStep         time.Duration

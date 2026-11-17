@@ -13,12 +13,219 @@ The recommended integration style is:
 1. Create an isolated `Engine` with `NewEngine()`
 2. Register one or more `Provider` implementations
 3. Compile Pine Script source with `Engine.Compile`
-4. Execute bytecode with `Engine.Execute` or `Engine.ExecuteWithRuntime`
+4. Inspect/resolve inputs with `Engine.InputParameters` and `SetInputParameters`
+   (optional `InputResolver`)
+5. Execute bytecode with `Engine.Execute` or `Engine.ExecuteWithRuntime`
+
+## Pre-Execution Inputs
+
+```go
+func (e *Engine) InputParameters(bytecode []byte) ([]InputParameter, error)
+func (e *Engine) SetInputParameters(values map[string]interface{})
+func (e *Engine) SetInputResolver(resolver InputResolver)
+
+type InputResolver interface {
+    ResolveInputs(parameters []InputParameter) (map[string]interface{}, error)
+}
+```
+
+`InputParameter` contains `ID`, `Kind`, `Title`, `Tooltip`, `Group`, `Inline`,
+`Default`, `Options`, optional numeric `Min`, `Max`, `Step`, and `Confirm`.
+Discovery does not invoke providers or user functions. Resolution and validation
+happen before execution touches providers or creates a Runtime. Overrides are
+copied by `SetInputParameters`; an optional resolver runs once per execution,
+and its returned keys take precedence. Omitted keys use validated defaults.
+Unknown IDs, invalid types/options/ranges, and missing constant defaults are
+errors. Input changes do not mutate the cached bytecode/program.
+Discovery includes inputs in function parameter defaults, even in unused
+functions. Metadata uses declaration-scope constants, not constants introduced
+by later function-body or sibling-block declarations. See
+[Pre-Execution Inputs](features.md#inputs-pre-execution-parameters) for supported input kinds and
+examples.
+
+```go
+code, err := engine.Compile(`length = input.int(14, minval = 1)
+level = input.price(100)
+result = ta.sma(close, length) - level`)
+if err != nil { return err }
+parameters, err := engine.InputParameters(code) // No provider call.
+if err != nil { return err }
+_ = parameters // Present these definitions to a host UI/configuration layer.
+engine.SetInputParameters(map[string]interface{}{"length": 20, "level": 125.5})
+result, err := engine.Execute(code)
+```
+
+Source values accept `InputSource("high")` (or the equivalent string).
+`EnumValue{Type, Name, Title}` identifies an enum member; hosts can also pass
+`"member"` or `"Type.member"` when selecting a declared enum option.
+These APIs are engine-local, not a replacement for custom-function argument
+binding or registration metadata.
+
+## Optional Market Context
+
+The base `Provider` remains unchanged. Implement any of these optional interfaces:
+
+```go
+type SymbolInfo map[string]interface{}
+type SymbolInfoProvider interface {
+    GetSymbolInfo(symbol string) (SymbolInfo, error)
+}
+type BarTime struct { Open, Close, TradingDay time.Time }
+type BarTimeProvider interface {
+    GetBarTimes(symbol, timeframe string) ([]BarTime, error)
+}
+type MarketSessions struct { Regular, Premarket, Postmarket string }
+type MarketSessionsProvider interface {
+    GetMarketSessions(symbol string) (MarketSessions, error)
+}
+
+func (e *Engine) SetSymbolInfo(symbol string, info SymbolInfo)
+func (e *Engine) SetBarTimes(bars []BarTime)
+func (e *Engine) SetMarketSessions(symbol string, sessions MarketSessions)
+```
+
+Explicit engine settings override provider fields/schedules. Setter inputs and
+provider timestamp slices are copied. Timestamp arrays must have exactly one
+entry per base-series value, increasing opens, and `Close > Open`. `TradingDay`
+is optional; absent labels use UTC midnight of the open date. Without supplied
+timestamps, the engine clock remains the fallback.
+
+Supply `"timezone"` as an IANA/fixed-offset name and `"mintick"` as a positive
+number in `SymbolInfo`. Other keys become `syminfo` fields. Missing numeric fields
+are `na`, missing text is empty, and UTC is the documented default timezone.
+Mintick-dependent functions fail if tick metadata is unavailable.
+
+Session strings use Pine's weekly format, for example:
+
+```go
+engine.SetSymbolInfo("NYSE:TEST", SymbolInfo{
+    "timezone": "America/New_York", "mintick": 0.01, "currency": "USD",
+})
+engine.SetMarketSessions("NYSE:TEST", MarketSessions{
+    Premarket: "0400-0930:23456",
+    Regular: "0930-1600:23456",
+    Postmarket: "1600-2000:23456",
+})
+```
+
+This does not supply an exchange holiday calendar or synthesize alternate chart
+bars. Historical execution also does not imply live-tick rollback support.
 
 For runnable consumer-oriented examples, see the pkg.go.dev example tests in:
 
 - `example_engine_test.go` (`ExampleNewEngine`, `ExampleEngine_ExecuteWithRuntime`)
 - `series/examples_test.go` (`ExampleNewQueue`, `ExampleSeriesExtend_Mean`, `ExampleCrossOver`)
+
+## Library Resolution and Ticker Descriptors
+
+```go
+type LibraryResolver interface {
+    ResolveLibrary(path string) (string, error)
+}
+type LibrarySources map[string]string // Implements LibraryResolver.
+func (e *Engine) SetLibraryResolver(resolver LibraryResolver)
+
+type TickerDescriptor struct {
+    Symbol, Chart string
+    Parameters, Modifiers map[string]interface{}
+}
+func ParseTickerID(value string) (TickerDescriptor, error)
+```
+
+Library resolution happens only during compilation. Linked bytecode embeds
+versioned dependencies, so executing it in another engine requires no resolver.
+The engine never implicitly reads files, accesses the network, or downloads
+TradingView libraries.
+
+```go
+engine.SetLibraryResolver(pinego.LibrarySources{
+    "me/Math/1": `library("Math")
+export twice(float x) => x * 2`,
+})
+code, err := engine.Compile(`import me/Math/1 as mathlib
+result = mathlib.twice(close)`)
+```
+
+Exports include functions, methods, types, and enums. Scalar constant globals
+and private helper names are isolated per import. Executable/data-dependent
+library globals are rejected. Limits: 32 nesting levels, 128 resolved modules,
+4 MiB per source. Cycles and conflicting aliases are errors.
+
+Alternative ticker constructors preserve chart parameters in engine-local
+encoded IDs. Providers use `ParseTickerID` to inspect them and must serve the
+transformed bars. The engine does not substitute standard candles or claim
+TradingView server wire-format compatibility.
+
+## Native Security and Footprint Providers
+
+```go
+type SecurityData struct {
+    Series map[string]SeriesExtended // value-type keys: "close", "open", ...
+    Bars []BarTime
+    Info SymbolInfo
+    Sessions MarketSessions
+}
+type SecurityDataProvider interface {
+    GetSecurityData(symbol, timeframe string) (SecurityData, error)
+}
+func (e *Engine) SetSecurityDataProvider(provider SecurityDataProvider)
+
+type FootprintLevel struct { Price, BuyVolume, SellVolume float64 }
+type FootprintProvider interface {
+    GetFootprintLevels(symbol, timeframe string, bar BarTime) ([]FootprintLevel, error)
+}
+func (e *Engine) SetFootprintProvider(provider FootprintProvider)
+```
+
+An existing chart Provider may implement these optional interfaces instead of
+using dedicated setters. Requests pass the **full** ticker ID, including chart
+and adjustment modifiers. No secondary request mutates the chart provider's
+timeframe setting.
+
+Security data requires a nonempty close series, equally sized value series, and
+ordered actual timestamps with `Close > Open`. Keep source series immutable for
+the runtime's lifetime. Secondary contexts have independent histories and
+indicator state. Only needed global dependencies are replayed, including
+collection aliases and script calls that mutate needed collection parameters.
+Scalar copies do not create reference-alias dependencies. Referenced host
+functions execute normally, so hosts remain responsible for their side effects.
+Returned collections/UDTs/maps/matrices are bounded, isolated snapshots.
+
+`request.security` supports gaps/lookahead, ignored invalid symbols, and
+`calc_bars_count`. `request.security_lower_tf` returns chronological arrays or
+tuple-of-arrays and supports ignored invalid timeframes. Same-context requests
+need no additional provider. Cross-currency requests and arbitrary mutable
+local captures remain unsupported. Limits are documented in `features.md`.
+
+Footprints require genuine order-flow levels, not candle-direction estimates.
+Missing capability/data returns `na`; malformed levels and provider errors
+propagate. A dedicated footprint provider takes precedence, followed by a
+security provider that also implements the footprint interface, then an
+optional chart provider. Requested-context footprints use the requested bars'
+symbol, timeframe, and timestamps.
+
+## Native Historical Strategy Limits
+
+Strategy execution is enabled by the Pine `strategy()` declaration, not by a
+separate Go broker toggle. Provider OHLC, explicit mintick/pointvalue, and
+`margin_long=0, margin_short=0` are required by the current native subset.
+Cash/equity-percent sizing also requires `syminfo.mincontract`.
+
+Market/limit/stop/stop-limit orders, basic exit brackets, closes, cancellation,
+fees/slippage, sizing, account/trade queries, and two risk rules are implemented.
+Pending orders run before bar evaluation; optional close processing runs after
+it without a second calculation. Historical scalar strategy metrics use
+calculation snapshots taken before optional post-evaluation close fills;
+current-bar reads remain live. Slippage adjusts execution prices without
+changing the chart mark used for equity. Inspect results through declared Pine
+variables and existing Runtime APIs.
+
+Advanced broker options fail explicitly. This is not full TradingView
+strategy/reporting parity; see [Strategy APIs](features.md#strategy-apis) for
+margin, trailing, risk-rule, FIFO/reservation, currency, recalculation, and
+independent-validation limitations.
+Existing exact-name `strategy.*` and `request.*` hooks retain precedence over
+the native implementations, including host-defined parameter metadata.
 
 ## Package-Level Functions (Default Engine)
 

@@ -184,6 +184,55 @@ func (r *Runtime) lookupAssignedValue(name string) (interface{}, bool) {
 }
 
 func (r *Runtime) resolve(name string) (interface{}, error) {
+	if strings.HasPrefix(name, "strategy.") {
+		if value, ok := r.strategyIdentifier(name); ok {
+			return value, nil
+		}
+	}
+	if strings.HasPrefix(name, "barstate.") {
+		idx := r.effectiveBarIndex()
+		valid := idx >= 0 && idx < r.expectedBars
+		switch name {
+		case "barstate.isfirst":
+			return valid && idx == 0, nil
+		case "barstate.islast", "barstate.islastconfirmedhistory":
+			return valid && idx == r.expectedBars-1, nil
+		case "barstate.ishistory", "barstate.isnew", "barstate.isconfirmed":
+			return valid, nil
+		case "barstate.isrealtime":
+			return false, nil
+		}
+	}
+	if name == "weekofyear" {
+		v, _ := r.timeIdentifierValue(name)
+		return v, nil
+	}
+	if name == "ta.tr" {
+		v, _, err := r.builtinTR([]interface{}{false})
+		return v, err
+	}
+	if isVolumeIndicator(name) {
+		return r.volumeIndicator(name), nil
+	}
+	if name == "ta.vwap" {
+		return r.builtinVWAP(nil, nil)
+	}
+	if name == "bid" || name == "ask" {
+		if r.timeframeBase == "T" && r.timeframeMult == 1 {
+			return r.exactSeriesValue(name, r.effectiveBarIndex()), nil
+		}
+		return math.NaN(), nil
+	}
+	if name == "last_bar_time" {
+		if r.expectedBars == 0 {
+			return math.NaN(), nil
+		}
+		t, _, _ := r.timesAtBar(r.expectedBars - 1)
+		return float64(t.UnixMilli()), nil
+	}
+	if strings.HasPrefix(name, "session.is") {
+		return r.sessionFlag(name)
+	}
 	if r.evalOffset == 0 {
 		if n, ok := r.lookupLoopBinding(name); ok {
 			return n, nil
@@ -345,8 +394,10 @@ func (r *Runtime) timeframeIdentifierValue(name string) (interface{}, bool) {
 	case "timeframe.isseconds":
 		return r.timeframeBase == "S", true
 	case "timeframe.isticks":
-		return false, true
-	case "timeframe.isminutes", "timeframe.isintraday":
+		return r.timeframeBase == "T", true
+	case "timeframe.isintraday":
+		return r.timeframeBase == "MIN" || r.timeframeBase == "S" || r.timeframeBase == "T", true
+	case "timeframe.isminutes":
 		return r.timeframeBase == "MIN", true
 	default:
 		return nil, false
@@ -722,6 +773,31 @@ func (r *Runtime) barTimes() (time.Time, time.Time, time.Time) {
 	if r.lastTimeIndex == idx && !r.lastBarOpen.IsZero() {
 		return r.lastBarOpen, r.lastBarClose, r.lastTradingDay
 	}
+	open, close, trading := r.timesAtBar(idx)
+	r.lastTimeIndex = idx
+	r.lastBarOpen = open
+	r.lastBarClose = close
+	r.lastTradingDay = trading
+	return open, close, trading
+}
+
+func (r *Runtime) timesAtBar(idx int) (time.Time, time.Time, time.Time) {
+	if idx >= 0 && idx < len(r.marketContext.bars) {
+		bar := r.marketContext.bars[idx]
+		trading := bar.TradingDay
+		if trading.IsZero() {
+			utc := bar.Open.UTC()
+			trading = time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+		}
+		return bar.Open, bar.Close, trading
+	}
+	if len(r.marketContext.bars) > 0 && idx >= len(r.marketContext.bars) {
+		last := r.marketContext.bars[len(r.marketContext.bars)-1]
+		open := shiftTimeframe(last.Open, idx-len(r.marketContext.bars)+1, r.timeframe)
+		close := shiftTimeframe(last.Open, idx-len(r.marketContext.bars)+2, r.timeframe)
+		utc := open.UTC()
+		return open, close, time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+	}
 	base := r.startTime
 	if base.IsZero() {
 		base = r.currentTime
@@ -729,13 +805,15 @@ func (r *Runtime) barTimes() (time.Time, time.Time, time.Time) {
 	if base.IsZero() {
 		base = time.Now().UTC()
 	}
-	open := base.Add(time.Duration(idx) * r.barStep).UTC()
-	close := open.Add(r.barStep)
+	open := shiftTimeframe(base, idx, r.timeframe).UTC()
+	close := shiftTimeframe(base, idx+1, r.timeframe).UTC()
+	if r.inferredStart {
+		// Infer every monthly bar from the original final-time anchor, not
+		// from a potentially clamped February start date.
+		open = shiftTimeframe(r.currentTime, idx-r.expectedBars+1, r.timeframe).UTC()
+		close = shiftTimeframe(r.currentTime, idx-r.expectedBars+2, r.timeframe).UTC()
+	}
 	trading := time.Date(open.Year(), open.Month(), open.Day(), 0, 0, 0, 0, time.UTC)
-	r.lastTimeIndex = idx
-	r.lastBarOpen = open
-	r.lastBarClose = close
-	r.lastTradingDay = trading
 	return open, close, trading
 }
 
@@ -751,6 +829,7 @@ func (r *Runtime) barCloseTime() time.Time {
 
 func (r *Runtime) timeIdentifierValue(name string) (interface{}, bool) {
 	open, close, trading := r.barTimes()
+	calendar := open.In(r.exchangeTimezone())
 	switch name {
 	case "time":
 		return float64(open.UnixMilli()), true
@@ -765,36 +844,35 @@ func (r *Runtime) timeIdentifierValue(name string) (interface{}, bool) {
 	case "time_tradingday":
 		return float64(trading.UnixMilli()), true
 	case "year":
-		return float64(open.Year()), true
+		return float64(calendar.Year()), true
 	case "month":
-		return float64(open.Month()), true
+		return float64(calendar.Month()), true
+	case "weekofyear":
+		_, week := calendar.ISOWeek()
+		return float64(week), true
 	case "dayofmonth":
-		return float64(open.Day()), true
+		return float64(calendar.Day()), true
 	case "dayofweek":
-		return float64(open.Weekday()) + 1, true
+		return float64(calendar.Weekday()) + 1, true
 	case "hour":
-		return float64(open.Hour()), true
+		return float64(calendar.Hour()), true
 	case "minute":
-		return float64(open.Minute()), true
+		return float64(calendar.Minute()), true
 	case "second":
-		return float64(open.Second()), true
+		return float64(calendar.Second()), true
 	default:
 		return nil, false
 	}
 }
 
 func (r *Runtime) builtinTime(args []interface{}) (interface{}, bool, error) {
-	if len(args) > 2 {
-		return nil, true, fmt.Errorf("time([timeframe], [session]) expects up to 2 args")
-	}
-	return float64(r.barOpenTime().UTC().UnixMilli()), true, nil
+	v, err := r.timeFunction(args, false)
+	return v, true, err
 }
 
 func (r *Runtime) builtinTimeClose(args []interface{}) (interface{}, bool, error) {
-	if len(args) > 2 {
-		return nil, true, fmt.Errorf("time_close([timeframe], [session]) expects up to 2 args")
-	}
-	return float64(r.barCloseTime().UTC().UnixMilli()), true, nil
+	v, err := r.timeFunction(args, true)
+	return v, true, err
 }
 
 func (r *Runtime) builtinTimeNow(args []interface{}) (interface{}, bool, error) {
@@ -878,13 +956,33 @@ func parseTimezone(loc string) *time.Location {
 }
 
 func (r *Runtime) builtinTimestamp(args []interface{}) (interface{}, bool, error) {
+	if len(args) == 1 {
+		s, ok := args[0].(string)
+		if !ok {
+			return nil, true, fmt.Errorf("timestamp dateString must be a string")
+		}
+		for _, layout := range []string{
+			time.RFC3339, "2006-01-02", "2006-01-02 15:04", "2006-01-02 15:04:05",
+			"02 Jan 2006", "02 Jan 2006 15:04", "02 Jan 2006 15:04 -0700",
+			"02 Jan 2006 15:04:05 -0700", "Jan 2, 2006", "Jan 2, 2006 15:04:05",
+		} {
+			if ts, err := time.Parse(layout, s); err == nil {
+				return float64(ts.UnixMilli()), true, nil
+			}
+		}
+		return nil, true, fmt.Errorf("timestamp invalid dateString %q", s)
+	}
 	if len(args) < 3 {
 		return nil, true, fmt.Errorf("timestamp expects at least 3 args")
 	}
-	loc := time.UTC
+	loc := r.exchangeTimezone()
 	pos := 0
 	if s, ok := args[0].(string); ok {
-		loc = parseTimezone(s)
+		var err error
+		loc, err = checkedTimezone(s)
+		if err != nil {
+			return nil, true, err
+		}
 		pos = 1
 	}
 	if len(args)-pos < 3 || len(args)-pos > 6 {
@@ -893,7 +991,7 @@ func (r *Runtime) builtinTimestamp(args []interface{}) (interface{}, bool, error
 	vals := []int{0, 0, 0, 0, 0, 0}
 	for i := 0; i < len(args)-pos; i++ {
 		f, ok := toFloat(args[pos+i])
-		if !ok {
+		if !ok || math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) || math.Abs(f) > 100000 {
 			return nil, true, fmt.Errorf("timestamp arg %d is not a number", pos+i+1)
 		}
 		vals[i] = int(f)

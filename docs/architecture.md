@@ -58,20 +58,48 @@ flowchart TD
 
 1. **Normalize** — Source compatibility syntax normalization
 2. **Parse** — Parse into AST
-3. **Validate** — Type constraint validation
-4. **Lower** — Lower the AST (lowerProgram)
-5. **Collect Requirements** — Derive series requirements from the program
-6. **Encode** — Encode the resulting program as bytecode (`[]byte`)
+3. **Link Libraries** — Resolve explicitly registered versioned imports, isolate
+   names and scalar globals, and embed dependencies in the program
+4. **Validate** — Type constraint validation
+5. **Lower** — Lower the AST (lowerProgram)
+6. **Collect Requirements** — Derive series requirements from the program
+7. **Encode** — Encode the resulting program as bytecode (`[]byte`)
 
 ## Execution Flow
 
 `Execute(bytecode)` proceeds through these phases:
 
-1. Resolve active symbol and required series through registered providers
-2. Construct a Runtime instance
-3. Evaluate the program once per bar (bar-by-bar loop)
-4. Commit history state after each bar iteration
-5. Return the final value produced on the last bar
+1. Discover constant input definitions and resolve/validate host parameter choices
+   without invoking Pine runtime functions or market-data providers; include
+   function parameter defaults and capture each input's lexical constant scope
+2. Resolve the active symbol, required series, and optional symbol/time/session
+   context through registered providers or explicit engine settings
+3. Construct a Runtime with immutable per-execution input bindings
+4. Evaluate the program once per bar (bar-by-bar loop); source parameters read
+   their preselected series rather than re-running input decisions
+5. Commit history state after each bar iteration
+6. Return the final value produced on the last bar
+
+For native strategies, each bar proceeds in this order:
+
+1. Process prior pending orders on the historical bar's configured OHLC path.
+2. Evaluate the script, including any immediate closes.
+3. Snapshot scalar strategy metrics for historical accesses.
+4. Optionally process eligible orders on the close, without recalculation.
+5. Commit script-variable history.
+
+Current-bar strategy reads use the live ledger; historical reads use calculation
+snapshots rather than the mutable ledger after later fills. Execution slippage
+affects fill accounting, not the chart mark used for equity or subsequent orders.
+
+Native security calls create lazy, isolated secondary runtimes from the needed
+global dependency slice. The engine aligns actual provider timestamps and
+snapshots results; it does not replay the entire chart script or switch the
+chart provider's timeframe. Dependency selection retains collection aliases,
+mutations in switch expressions, and script calls that mutate needed collection
+parameters, but does not treat scalar copies as reference aliases. Currency is
+validated on every evaluation, including cached stream reuse. Provider-backed
+footprints can execute in either the chart or a requested context.
 
 ```mermaid
 %%{init: {"themeVariables": {"fontSize": "12px"}, "sequence": {"diagramMarginX": 20, "diagramMarginY": 10, "messageMargin": 10}} }%%
@@ -87,6 +115,7 @@ sequenceDiagram
 	App->>Eng: Compile(script)
 	Eng->>Eng: normalize()
 	Eng->>Eng: parse()
+	Eng->>Eng: linkLibraries()
 	Eng->>Eng: validate()
 	Eng->>Eng: lowerProgram()
 	Eng->>Eng: collectRequirements()
@@ -95,6 +124,7 @@ sequenceDiagram
 
 	App->>Eng: Execute(bytecode)
 	Eng->>Eng: ExecuteWithRuntime(bytecode)
+	Eng->>Eng: discoverInputs()/resolveInputs()
 	Eng->>Prov: GetTimeframe()/GetSession()
 	Eng->>Prov: GetSymbols()/GetValuesTypes()
 	Eng->>Prov: GetSeries("DEMO|close")
@@ -102,10 +132,17 @@ sequenceDiagram
 
 	loop each close bar
 		Eng->>RT: barIndex = i
+		opt native strategy
+			Eng->>RT: strategyBeginBar()
+		end
 		Eng->>RT: execTopLevel()
 		RT->>RT: evaluate close
 		RT->>RT: update indicators
 		RT->>RT: evaluate sum2(ma, ex)
+		opt native strategy
+			Eng->>RT: snapshotStrategyMetrics()
+			Eng->>RT: strategyEndBar()
+		end
 		Eng->>RT: commitBar()
 	end
 
@@ -125,6 +162,12 @@ The Provider interface decouples the compiler/runtime from specific data sources
 - Symbol and value_type aggregation across providers
 - Timeframe and session propagation from Engine to all providers
 - Clean separation between compilation (pure) and execution (data-dependent)
+
+Legacy general series reads can fall back to a symbol's default value type.
+Exact-data consumers, such as strategy OHLC and volume-based APIs, never use that
+fallback. The series cache records genuinely loaded value types only; preloading
+does not store fallback results under requested OHLC keys. Missing exact data is
+handled according to each API's documented error or `na` policy.
 
 ## Examples
 

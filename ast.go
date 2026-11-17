@@ -10,6 +10,8 @@ package pinescription
 // SeriesKeys are populated by the compiler to record all market data referenced
 // in the script.
 type Program struct {
+	Library    bool                   `json:"library,omitempty"`
+	Imports    []LibraryImport        `json:"imports,omitempty"`
 	Stmts      []Stmt                 `json:"stmts"`
 	Functions  map[string]FunctionDef `json:"functions"`
 	Types      map[string]TypeDef     `json:"types,omitempty"`
@@ -22,8 +24,10 @@ type Program struct {
 // name and the ordered list of fields. Instances of the type are created by
 // calling the TypeName.new constructor from Pine Script.
 type TypeDef struct {
-	Name   string      `json:"name"`
-	Fields []TypeField `json:"fields,omitempty"`
+	Name     string      `json:"name"`
+	Enum     bool        `json:"enum,omitempty"`
+	Exported bool        `json:"exported,omitempty"`
+	Fields   []TypeField `json:"fields,omitempty"`
 }
 
 // TypeField describes a single field within a TypeDef. TypeName is the Pine Script
@@ -31,6 +35,7 @@ type TypeDef struct {
 // evaluated at instantiation time if the field is omitted.
 type TypeField struct {
 	Name     string `json:"name"`
+	Title    string `json:"title,omitempty"`
 	TypeName string `json:"type_name,omitempty"`
 	Default  *Expr  `json:"default,omitempty"`
 }
@@ -38,6 +43,7 @@ type TypeField struct {
 // FunctionDef describes a user-defined Pine Script function, including its name,
 // parameter names, body statements, and optionally a single-expression body.
 type FunctionDef struct {
+	Exported      bool          `json:"exported,omitempty"`
 	Name          string        `json:"name"`
 	Params        []string      `json:"params"`
 	ParamDefaults map[int]*Expr `json:"param_defaults,omitempty"`
@@ -50,8 +56,9 @@ type FunctionDef struct {
 // "break", "continue", "return". The remaining fields hold the operands
 // specific to each statement kind, as defined by the Pine Script v6 grammar.
 type Stmt struct {
-	Kind string `json:"kind"`
-	SOp  uint8  `json:"sop,omitempty"`
+	Import *LibraryImport `json:"import,omitempty"`
+	Kind   string         `json:"kind"`
+	SOp    uint8          `json:"sop,omitempty"`
 
 	Name       string   `json:"name,omitempty"`
 	TypeName   string   `json:"type_name,omitempty"`

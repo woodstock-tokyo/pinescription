@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	wseries "github.com/woodstock-tokyo/pinescription/series"
 )
@@ -108,12 +109,15 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 			return nil, true, fmt.Errorf("bool() expects 1 arg")
 		}
 		return truthy(args[0]), true, nil
-	case "string", "str.tostring":
+	case "str.tostring":
+		v, err := r.builtinToString(args)
+		return v, true, err
+	case "string":
 		if len(args) < 1 || len(args) > 2 {
 			return nil, true, fmt.Errorf("%s() expects 1 or 2 args", name)
 		}
 		return toString(args[0]), true, nil
-	case "indicator":
+	case "indicator", "library":
 		return nil, true, nil
 	case "input", "input.int", "input.float", "input.bool", "input.string", "input.color", "input.time", "input.session", "input.symbol", "input.source":
 		if len(args) == 0 || args[0] == nil {
@@ -465,7 +469,8 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 			out = append(out, pm.data[k])
 		}
 		return out, true, nil
-	case "array.new_int", "array.new_float", "array.new_bool", "array.new_string", "array.new_box", "array.new_label", "array.new_polyline", "array.new_chart_point":
+	case "array.new_int", "array.new_float", "array.new_bool", "array.new_string", "array.new_box", "array.new_label", "array.new_polyline", "array.new_chart_point",
+		"array.new_color", "array.new_line", "array.new_linefill", "array.new_table":
 		sz := 0
 		if len(args) > 0 {
 			f, _ := toFloat(args[0])
@@ -1154,22 +1159,8 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 		}
 		return strings.HasSuffix(s, suffix), true, nil
 	case "str.replace":
-		if len(args) != 3 {
-			return nil, true, fmt.Errorf("str.replace expects 3 args")
-		}
-		s, ok := args[0].(string)
-		if !ok {
-			return nil, true, fmt.Errorf("str.replace requires string")
-		}
-		old, ok := args[1].(string)
-		if !ok {
-			return nil, true, fmt.Errorf("str.replace requires old string")
-		}
-		repl, ok := args[2].(string)
-		if !ok {
-			return nil, true, fmt.Errorf("str.replace requires replacement string")
-		}
-		return strings.ReplaceAll(s, old, repl), true, nil
+		v, err := replaceOccurrence(args)
+		return v, true, err
 	case "str.substring":
 		if len(args) != 2 && len(args) != 3 {
 			return nil, true, fmt.Errorf("str.substring expects 2 or 3 args")
@@ -1222,7 +1213,8 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 		if !ok {
 			return nil, true, fmt.Errorf("str.format requires format string")
 		}
-		return formatStringTemplate(format, args[1:]), true, nil
+		v, err := formatMessage(format, args[1:])
+		return v, true, err
 	case "na":
 		if len(args) != 1 {
 			return nil, true, fmt.Errorf("na() expects 1 arg")
@@ -1254,10 +1246,7 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 		if _, ok := args[0].(bool); ok {
 			return nil, true, fmt.Errorf("fixnan() does not accept bool")
 		}
-		if isNA(args[0]) {
-			return math.NaN(), true, nil
-		}
-		return args[0], true, nil
+		return r.builtinFixnan(rawArgs, args[0])
 	case "math.abs", "abs":
 		if len(args) != 1 {
 			return nil, true, fmt.Errorf("math.abs() expects 1 arg")
@@ -1624,6 +1613,9 @@ func (r *Runtime) callBuiltin(name string, rawArgs []*Expr, args []interface{}) 
 	case "rsi_of":
 		return r.builtinRSIOf(args)
 	default:
+		if v, ok, err := r.callAdditionalBuiltin(name, rawArgs, args); ok || err != nil {
+			return v, ok, err
+		}
 		if strings.HasPrefix(name, "matrix.") {
 			return r.callMatrixBuiltin(name, args)
 		}
@@ -1680,6 +1672,10 @@ func arrayNumericValues(v interface{}, fn string) ([]float64, error) {
 	}
 	out := make([]float64, len(arr))
 	for i, item := range arr {
+		if isNA(item) {
+			out[i] = math.NaN()
+			continue
+		}
 		f, ok := toFloat(item)
 		if !ok {
 			return nil, fmt.Errorf("%s requires numeric array", fn)
@@ -5350,7 +5346,10 @@ func (r *Runtime) builtinTR(args []interface{}) (interface{}, bool, error) {
 		return math.NaN(), true, nil
 	}
 	if math.IsNaN(prevC) {
-		return curH - curL, true, nil
+		if len(args) == 0 || truthy(args[0]) {
+			return curH - curL, true, nil
+		}
+		return math.NaN(), true, nil
 	}
 	a := curH - curL
 	b := math.Abs(curH - prevC)
@@ -5654,8 +5653,10 @@ func timeframeIdentifierValue(name, configured string) (interface{}, bool) {
 	case "timeframe.isseconds":
 		return base == "S", true
 	case "timeframe.isticks":
-		return false, true
-	case "timeframe.isminutes", "timeframe.isintraday":
+		return base == "T", true
+	case "timeframe.isintraday":
+		return base == "MIN" || base == "S" || base == "T", true
+	case "timeframe.isminutes":
 		return base == "MIN", true
 	default:
 		return nil, false
@@ -5672,13 +5673,22 @@ func parsePositiveIntFast(s string) (int, bool) {
 		if c < '0' || c > '9' {
 			return 0, false
 		}
+		if n > (int(^uint(0)>>1)-int(c-'0'))/10 {
+			return 0, false
+		}
 		n = n*10 + int(c-'0')
 	}
 	return n, true
 }
 
 func normalizeTimeframe(tf string) string {
-	tf = strings.TrimSpace(strings.ToUpper(tf))
+	tf = strings.TrimSpace(tf)
+	if len(tf) > 1 && strings.HasSuffix(tf, "m") {
+		if n, ok := parsePositiveIntFast(tf[:len(tf)-1]); ok && n > 0 {
+			return strconv.Itoa(n)
+		}
+	}
+	tf = strings.ToUpper(tf)
 	if tf == "" {
 		return ""
 	}
@@ -5690,7 +5700,7 @@ func normalizeTimeframe(tf string) string {
 	}
 	if strings.HasSuffix(tf, "H") {
 		v, ok := parsePositiveIntFast(strings.TrimSuffix(tf, "H"))
-		if ok && v > 0 {
+		if ok && v > 0 && v <= 24 {
 			return strconv.Itoa(v * 60)
 		}
 	}
@@ -5703,7 +5713,7 @@ func parseTimeframe(tf string) (string, int, bool) {
 		return "", 0, false
 	}
 	if n, ok := parsePositiveIntFast(tf); ok && n > 0 {
-		return "MIN", n, true
+		return "MIN", n, n <= 1440
 	}
 	unit := tf[len(tf)-1:]
 	n := tf[:len(tf)-1]
@@ -5715,8 +5725,16 @@ func parseTimeframe(tf string) (string, int, bool) {
 		return "", 0, false
 	}
 	switch unit {
-	case "S", "T", "D", "W", "M":
-		return unit, mult, true
+	case "S":
+		return unit, mult, mult <= 60
+	case "T":
+		return unit, mult, mult <= 1000
+	case "D":
+		return unit, mult, mult <= 365
+	case "W":
+		return unit, mult, mult <= 52
+	case "M":
+		return unit, mult, mult <= 12
 	default:
 		return "", 0, false
 	}
@@ -5741,7 +5759,7 @@ func timeframeSecondsFromParsed(base string, mult int) (int, bool) {
 	case "W":
 		return mult * 7 * 86400, true
 	case "M":
-		return mult * 30 * 86400, true
+		return mult * 2628003, true
 	case "T":
 		return 0, false
 	default:
@@ -5750,15 +5768,18 @@ func timeframeSecondsFromParsed(base string, mult int) (int, bool) {
 }
 
 func timeframeFromSeconds(seconds int) string {
-	if seconds <= 0 {
-		return ""
+	if seconds >= 365*86400 {
+		return "12M"
 	}
-	if seconds%2592000 == 0 {
-		m := seconds / 2592000
-		if m == 1 {
-			return "1M"
+	if seconds <= 30 {
+		for _, step := range []int{1, 5, 10, 15, 30} {
+			if seconds <= step {
+				return fmt.Sprintf("%dS", step)
+			}
 		}
-		return fmt.Sprintf("%dM", m)
+	}
+	if seconds < 86400 {
+		return strconv.Itoa((seconds + 59) / 60)
 	}
 	if seconds%604800 == 0 {
 		w := seconds / 604800
@@ -5767,20 +5788,10 @@ func timeframeFromSeconds(seconds int) string {
 		}
 		return fmt.Sprintf("%dW", w)
 	}
-	if seconds%86400 == 0 {
-		d := seconds / 86400
-		if d == 1 {
-			return "1D"
-		}
-		return fmt.Sprintf("%dD", d)
+	if seconds%2628003 == 0 {
+		return fmt.Sprintf("%dM", seconds/2628003)
 	}
-	if seconds%60 == 0 {
-		return strconv.Itoa(seconds / 60)
-	}
-	if seconds == 1 {
-		return "1S"
-	}
-	return fmt.Sprintf("%dS", seconds)
+	return fmt.Sprintf("%dD", (seconds+86399)/86400)
 }
 
 func (r *Runtime) builtinTimeframeInSeconds(args []interface{}) (interface{}, bool, error) {
@@ -5795,8 +5806,11 @@ func (r *Runtime) builtinTimeframeInSeconds(args []interface{}) (interface{}, bo
 	}
 	tf := r.timeframe
 	s, ok := args[0].(string)
-	if !ok || strings.TrimSpace(s) == "" {
-		return nil, true, fmt.Errorf("timeframe.in_seconds period must be a non-empty string")
+	if !ok {
+		return nil, true, fmt.Errorf("timeframe.in_seconds period must be a string")
+	}
+	if s == "" {
+		s = r.timeframe
 	}
 	tf = s
 	seconds, ok := timeframeInSeconds(tf)
@@ -5810,11 +5824,11 @@ func (r *Runtime) builtinTimeframeFromSeconds(args []interface{}) (interface{}, 
 	if len(args) != 1 {
 		return nil, true, fmt.Errorf("timeframe.from_seconds(seconds) expects 1 arg")
 	}
-	v, _ := toFloat(args[0])
-	seconds := int(v)
-	if seconds <= 0 {
-		return "", true, nil
+	v, ok := toFloat(args[0])
+	if !ok || math.IsNaN(v) || math.IsInf(v, 0) {
+		return math.NaN(), true, nil
 	}
+	seconds := int(math.Ceil(math.Min(v, 365*86400)))
 	return timeframeFromSeconds(seconds), true, nil
 }
 
@@ -5830,27 +5844,20 @@ func (r *Runtime) builtinTimeframeChange(args []interface{}) (interface{}, bool,
 		}
 		target = s
 	}
-	curSeconds := r.timeframeSecs
-	curOK := r.timeframeSecsOK
-	targetSeconds, targetOK := timeframeInSeconds(target)
-	if !curOK || !targetOK || targetSeconds <= 0 {
+	if r.effectiveBarIndex() <= 0 {
 		return false, true, nil
 	}
-	if targetSeconds <= curSeconds {
-		return true, true, nil
+	open := r.barOpenTime().In(r.exchangeTimezone())
+	current, _, err := timeBucket(open, target, time.Time{})
+	if err != nil {
+		return nil, true, err
 	}
-	ratio := targetSeconds / curSeconds
-	if targetSeconds%curSeconds != 0 {
-		ratio++
+	prevOpen, _, _ := r.timesAtBar(r.effectiveBarIndex() - 1)
+	previous, _, err := timeBucket(prevOpen.In(r.exchangeTimezone()), target, time.Time{})
+	if err != nil {
+		return nil, true, err
 	}
-	if ratio <= 1 {
-		return true, true, nil
-	}
-	idx := r.effectiveBarIndex()
-	if idx < 0 {
-		return false, true, nil
-	}
-	return (idx+1)%ratio == 0, true, nil
+	return !current.Equal(previous), true, nil
 }
 
 var formatPlaceholderRE = regexp.MustCompile(`\{(\d+)(?:[^}]*)\}`)

@@ -10,9 +10,13 @@ This folder contains the maintained reference material for Pinescription beyond 
 
 ## Start Here
 
-- [`api.md`](api.md) — public Go API reference for `Engine`, `Runtime`, `Provider`, alerts, and the recommended execution workflow
-- [`architecture.md`](architecture.md) — compilation pipeline, runtime lifecycle, and bar-by-bar execution model
-- [`features.md`](features.md) — supported and unsupported Pine Script language/runtime features
+- [`api.md`](api.md) — public Go API reference, pre-execution inputs, optional data providers, host hooks, and the recommended execution workflow
+- [`architecture.md`](architecture.md) — compilation/linking pipeline, runtime lifecycle, dependency selection, and strategy calculation order
+- [`features.md`](features.md) — supported Pine Script subset, examples, provider requirements, and strategy/request/plotting limitations
+
+Use the feature reference for coverage and compatibility limits rather than a
+separate implementation checklist. Pine Script v6 defines the intended behavior;
+compatibility extensions and unsupported behavior are documented explicitly.
 
 ## Runnable Examples
 

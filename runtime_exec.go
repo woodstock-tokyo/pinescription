@@ -13,12 +13,17 @@ import (
 const maxLoopIterations = 100000
 
 func (r *Runtime) execTopLevel() error {
-	fl, err := r.execStmtList(r.program.Stmts)
-	if err != nil {
-		return err
-	}
-	if fl.kind == flowReturn {
-		return nil
+	prev := r.executingStatement
+	defer func() { r.executingStatement = prev }()
+	for i, stmt := range r.program.Stmts {
+		r.executingStatement = i
+		fl, err := r.execStmt(stmt)
+		if err != nil {
+			return err
+		}
+		if fl.kind == flowReturn {
+			return nil
+		}
 	}
 	return nil
 }
