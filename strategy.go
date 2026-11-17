@@ -669,7 +669,7 @@ func (r *Runtime) strategySegment(start, end float64, opening, closeProcessing b
 		if slip {
 			fill += float64(dir) * s.slippage * s.tick
 		}
-		qty := chosen.qty
+		var filledQty float64
 		var err error
 		if chosen.kind == "close" || chosen.kind == "exit" {
 			matches := s.matchingTrades(chosen)
@@ -683,19 +683,20 @@ func (r *Runtime) strategySegment(start, end float64, opening, closeProcessing b
 			if s.minContract > 0 {
 				chosen.qty = math.Floor(chosen.qty/s.minContract+1e-10) * s.minContract
 			}
-			qty = math.Min(chosen.qty, total)
+			qty := math.Min(chosen.qty, total)
 			if chosenTrade != nil {
 				qty = math.Min(qty, chosenTrade.qty)
 			}
 			err = r.fillStrategyClose(chosen, fill, tradeUID(chosenTrade))
+			filledQty = qty
 		} else {
-			qty, err = r.fillStrategyEntry(chosen, fill)
+			filledQty, err = r.fillStrategyEntry(chosen, fill)
 		}
 		if err != nil {
 			return err
 		}
 		if chosen.kind == "exit" {
-			chosen.qty -= qty
+			chosen.qty -= filledQty
 		}
 		if chosen.kind != "exit" || chosen.qty <= 1e-12 || len(s.matchingTrades(chosen)) == 0 {
 			s.removeOrder(chosen)
@@ -707,7 +708,7 @@ func (r *Runtime) strategySegment(start, end float64, opening, closeProcessing b
 					if chosen.ocaType == "cancel" {
 						continue
 					}
-					o.qty = math.Max(0, o.qty-qty)
+					o.qty = math.Max(0, o.qty-filledQty)
 					if o.qty == 0 {
 						continue
 					}
